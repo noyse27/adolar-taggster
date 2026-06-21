@@ -1,5 +1,7 @@
 # TagMeGently
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-yellow?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/noyse27)
+
 A modern MP3 tagger with Discogs integration — built as a replacement for Tag&Rename, fixing its UTF-8/special character encoding bug when fetching metadata from Discogs.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
@@ -142,6 +144,12 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ### v0.1
 - Initial release: Explorer tree, Discogs search, Cover Quality Scanner, mask-based renaming
+
+## Support
+
+If TagMeGently saves you time, consider buying me a coffee ☕
+
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/noyse27)
 
 ## License
 
