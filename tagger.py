@@ -443,14 +443,14 @@ class DiscogsSearchThread(QThread):
             # When album is given use release_title= to restrict to album-title
             # matches only (not track titles). Artist goes into q= so special
             # chars like "Distain!" are handled correctly by the full-text index.
-            params = {'per_page': 25}  # includes both releases and masters
+            # Use q= so both releases AND masters are returned,
+            # then filter client-side by album title words
+            parts = []
+            if self.artist:
+                parts.append(self.artist)
             if self.album:
-                params['release_title'] = self.album
-                if self.artist:
-                    params['artist'] = self.artist
-            else:
-                if self.artist:
-                    params['q'] = self.artist
+                parts.append(self.album)
+            params = {'per_page': 50, 'q': ' '.join(parts) if parts else '*'}
             if self.year:
                 params['year'] = self.year
 
@@ -478,6 +478,11 @@ class DiscogsSearchThread(QThread):
                     'resource_url': item.get('resource_url', ''),
                     'is_master': item.get('type', '') == 'master',
                 })
+            # Client-side filter: all album search words must appear in the result title
+            if self.album:
+                words = self.album.lower().split()
+                results = [r for r in results
+                           if all(w in r['title'].lower() for w in words)]
             self.results_ready.emit(results)
         except Exception as e:
             self.error.emit(str(e))
