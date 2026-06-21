@@ -17,16 +17,17 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QHeaderView, QToolBar,
     QStatusBar, QFrame, QScrollArea, QMessageBox, QProgressBar,
     QGroupBox, QGridLayout, QSizePolicy, QAbstractItemView,
-    QMenu, QTextEdit
+    QMenu, QTextEdit, QStyledItemDelegate
 )
 from PyQt6.QtGui import QFileSystemModel
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QSize, QDir, QSortFilterProxyModel,
-    QModelIndex, QTimer
+    QModelIndex, QTimer, QStandardPaths
 )
 from PyQt6.QtGui import (
     QIcon, QPixmap, QImage, QAction, QFont, QColor, QPalette
 )
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QTreeView
 
 from mutagen.mp3 import MP3
 from mutagen.id3 import (
@@ -95,8 +96,7 @@ QHeaderView::section {
     padding: 5px 8px;
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
+
 }
 QHeaderView::section:hover {
     color: #a6adc8;
@@ -113,7 +113,7 @@ QPushButton {
     font-weight: 700;
     font-size: 12px;
     min-height: 26px;
-    letter-spacing: 0.3px;
+
 }
 QPushButton:hover {
     background-color: #a8c7ff;
@@ -147,7 +147,7 @@ QPushButton#danger {
     border: 1px solid #f38ba8;
 }
 QPushButton#danger:hover {
-    background-color: #f38ba820;
+    background-color: #4a2a2e;
 }
 
 /* ── Inputs ── */
@@ -203,7 +203,7 @@ QGroupBox {
     color: #6c7086;
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.5px;
+
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -284,8 +284,7 @@ QLabel#heading {
     color: #cdd6f4;
     font-weight: 700;
     font-size: 11px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
+
 }
 QLabel#cover {
     background-color: #1e1e2e;
@@ -1524,6 +1523,265 @@ class SettingsDialog(QDialog):
         return self.token_input.text().strip()
 
 
+class FolderTreeWidget(QTreeWidget):
+    """Explorer-style folder tree with special folders, drives and libraries."""
+    folder_selected = pyqtSignal(str)
+
+    SPECIAL = [
+        ('🎵  Musik',      QStandardPaths.StandardLocation.MusicLocation),
+        ('⬇  Downloads',   QStandardPaths.StandardLocation.DownloadLocation),
+        ('🖥  Desktop',    QStandardPaths.StandardLocation.DesktopLocation),
+        ('📄  Dokumente',  QStandardPaths.StandardLocation.DocumentsLocation),
+        ('🎬  Videos',     QStandardPaths.StandardLocation.MoviesLocation),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setHeaderHidden(True)
+        self.setIndentation(18)
+        self.setAnimated(True)
+        self.setStyleSheet("""
+            QTreeWidget {
+                background-color: #181825; border: none;
+                color: #cdd6f4; outline: none;
+            }
+            QTreeWidget::item {
+                padding: 3px 4px; border: none; min-height: 22px;
+            }
+            QTreeWidget::item:hover { background-color: #2a2a3e; }
+            QTreeWidget::item:selected {
+                background-color: #313244; color: #89b4fa;
+                border-left: 2px solid #89b4fa;
+            }
+            QTreeWidget::branch { background-color: #181825; }
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {
+                border-image: none; image: none;
+                background-color: #181825;
+            }
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {
+                border-image: none; image: none;
+                background-color: #181825;
+            }
+        """)
+        self.itemExpanded.connect(self._on_expand)
+        self.itemCollapsed.connect(self._on_collapse)
+        self.itemClicked.connect(self._on_click)
+        self.itemDoubleClicked.connect(self._on_double_click)
+        self.setExpandsOnDoubleClick(False)
+        self._pending_item = None
+        self._click_timer = None  # created lazily after event loop starts
+        QTimer.singleShot(0, self._populate)  # populate after event loop starts
+
+    @staticmethod
+    def _safe_is_dir(path, timeout=0.5):
+        """Check is_dir() in a thread with timeout to avoid network hangs."""
+        import threading
+        result = [False]
+        def check():
+            try:
+                result[0] = Path(path).is_dir()
+            except Exception:
+                pass
+        t = threading.Thread(target=check, daemon=True)
+        t.start()
+        t.join(timeout)
+        return result[0]
+
+    def _populate(self):
+        # ── Special folders ──
+        for label, loc in self.SPECIAL:
+            paths = QStandardPaths.standardLocations(loc)
+            if paths and self._safe_is_dir(paths[0]):
+                item = self._make_item(label, paths[0])
+                self.addTopLevelItem(item)
+
+        # ── Dieser PC ──
+        pc = QTreeWidgetItem(['💻  Dieser PC'])
+        pc.setData(0, Qt.ItemDataRole.UserRole, '__group__')
+        pc.setForeground(0, QColor('#6c7086'))
+        self.addTopLevelItem(pc)
+        import string, ctypes
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            # Use GetDriveType to avoid triggering network/removable media dialogs
+            try:
+                dt = ctypes.windll.kernel32.GetDriveTypeW(drive)
+                if dt < 2:  # 0=unknown, 1=no root
+                    continue
+            except Exception:
+                continue
+            drive_item = self._make_item(f"  {letter}:", drive)
+            pc.addChild(drive_item)
+        pc.setExpanded(True)
+
+        # ── Bibliotheken ──
+        lib_paths = {
+            '🎵  Musik':     QStandardPaths.standardLocations(QStandardPaths.StandardLocation.MusicLocation),
+            '📷  Bilder':    QStandardPaths.standardLocations(QStandardPaths.StandardLocation.PicturesLocation),
+            '📄  Dokumente': QStandardPaths.standardLocations(QStandardPaths.StandardLocation.DocumentsLocation),
+            '🎬  Videos':    QStandardPaths.standardLocations(QStandardPaths.StandardLocation.MoviesLocation),
+        }
+        libs = QTreeWidgetItem(['📚  Bibliotheken'])
+        libs.setData(0, Qt.ItemDataRole.UserRole, '__group__')
+        libs.setForeground(0, QColor('#6c7086'))
+        self.addTopLevelItem(libs)
+        for label, paths in lib_paths.items():
+            if paths and self._safe_is_dir(paths[0]):
+                libs.addChild(self._make_item(label, paths[0]))
+
+    def _make_item(self, label, path):
+        item = QTreeWidgetItem(['▶ ' + label])
+        item.setData(0, Qt.ItemDataRole.UserRole, path)
+        if path and path not in ('__group__', '__ph__'):
+            # Always add placeholder — avoids slow is_dir() calls on network drives
+            ph = QTreeWidgetItem([''])
+            ph.setData(0, Qt.ItemDataRole.UserRole, '__ph__')
+            item.addChild(ph)
+        return item
+
+    def _on_expand(self, item):
+        # Update arrow prefix
+        t = item.text(0)
+        if t.startswith('▶ '):
+            item.setText(0, '▼ ' + t[2:])
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path or path in ('__group__', '__ph__'):
+            return
+        if item.childCount() == 1 and item.child(0).data(0, Qt.ItemDataRole.UserRole) == '__ph__':
+            item.takeChild(0)
+            import os, threading
+            dirs_result = []
+            def _scan():
+                try:
+                    dirs_result.extend(sorted(
+                        (Path(e.path) for e in os.scandir(path)
+                         if e.is_dir(follow_symlinks=False) and not e.name.startswith('.')),
+                        key=lambda p: p.name.lower()
+                    ))
+                except Exception:
+                    pass
+            t = threading.Thread(target=_scan, daemon=True)
+            t.start()
+            t.join(2.0)  # max 2s for any directory listing
+            for d in dirs_result:
+                item.addChild(self._make_item(d.name, str(d)))
+
+    def _on_collapse(self, item):
+        t = item.text(0)
+        if t.startswith('▼ '):
+            item.setText(0, '▶ ' + t[2:])
+
+    def _get_timer(self):
+        if self._click_timer is None:
+            self._click_timer = QTimer(self)
+            self._click_timer.setSingleShot(True)
+            self._click_timer.setInterval(350)
+            self._click_timer.timeout.connect(self._do_expand_pending)
+        return self._click_timer
+
+    def _on_click(self, item, col):
+        """Single click: queue expand — cancelled if double-click follows."""
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path or path in ('__group__', '__ph__'):
+            return
+        t = self._get_timer()
+        t.stop()
+        self._pending_item = item
+        t.start()
+
+    def _do_expand_pending(self):
+        """Fires 350ms after single click if no double-click came."""
+        if self._pending_item:
+            self._pending_item.setExpanded(not self._pending_item.isExpanded())
+        self._pending_item = None
+
+    def _on_double_click(self, item, col):
+        """Double click: cancel pending expand and scan the folder."""
+        if self._click_timer:
+            self._click_timer.stop()
+        self._pending_item = None
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path or path in ('__group__', '__ph__'):
+            return
+        p = Path(path)
+        if p == p.parent:  # root drive — just expand
+            item.setExpanded(not item.isExpanded())
+            return
+        if self._safe_is_dir(path):
+            self.folder_selected.emit(path)
+
+    def navigate_to(self, path):
+        """Expand tree to show a given path and select it."""
+        parts = Path(path).parts
+        # Find matching top-level drive item under "Dieser PC"
+        for i in range(self.topLevelItemCount()):
+            tl = self.topLevelItem(i)
+            for j in range(tl.childCount()):
+                child = tl.child(j)
+                cp = child.data(0, Qt.ItemDataRole.UserRole) or ''
+                if cp and Path(cp).drive == Path(path).drive:
+                    self._expand_to(child, path)
+                    return
+        # Also check top-level special folders
+        for i in range(self.topLevelItemCount()):
+            tl = self.topLevelItem(i)
+            cp = tl.data(0, Qt.ItemDataRole.UserRole) or ''
+            if cp and path.startswith(cp):
+                self._expand_to(tl, path)
+                return
+
+    def _expand_to(self, start_item, target_path):
+        """Recursively expand items until we reach target_path."""
+        try:
+            self._on_expand(start_item)
+            start_item.setExpanded(True)
+            for i in range(start_item.childCount()):
+                child = start_item.child(i)
+                cp = child.data(0, Qt.ItemDataRole.UserRole) or ''
+                if cp and target_path.startswith(cp):
+                    if cp == target_path:
+                        self.setCurrentItem(child)
+                        self.scrollToItem(child)
+                        return
+                    self._expand_to(child, target_path)
+                    return
+        except Exception:
+            pass
+
+
+class FolderScanThread(QThread):
+    progress = pyqtSignal(int, str)   # count, current filename
+    scan_done = pyqtSignal(object)    # [(path, tags), ...] — object avoids list copy overhead
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        results = []
+        try:
+            for mp3 in Path(self.path).rglob('*.mp3'):
+                if self._cancel:
+                    return
+                tags = load_mp3_tags(str(mp3))
+                results.append((str(mp3), tags))
+                self.progress.emit(len(results), mp3.name)
+        except Exception:
+            pass
+        if not self._cancel:
+            results.sort(key=lambda x: (
+                x[1].get('album', '').lower(),
+                natural_sort_key(Path(x[0]))
+            ))
+            self.scan_done.emit(results)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1531,11 +1789,12 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 700)
         self.resize(1400, 800)
         self._current_folder = None
+        self._current_folder_jpg = None
         self._files = []  # list of (path, tags)
         self._discogs_token = self._load_token()
         self._build_ui()
         self._build_menu()
-        QTimer.singleShot(200, self._restore_last_folder)
+        # _restore_last_folder disabled — crashes Qt on network paths (QFileSystemModel.index)
 
     def _load_config(self):
         cfg = Path.home() / '.tagmegently.json'
@@ -1554,20 +1813,21 @@ class MainWindow(QMainWindow):
 
     def _restore_last_folder(self):
         last = self._load_config().get('last_folder', '')
-        p = Path(last) if last else None
-        # Skip root drives (e.g. X:\) — only restore real sub-folders
-        if not p or not p.is_dir() or p == p.parent:
+        if not last:
             return
-        idx = self.fs_model.index(last)
-        if idx.isValid():
-            parent = idx.parent()
-            while parent.isValid():
-                self.tree_view.expand(parent)
-                parent = parent.parent()
-            self.tree_view.expand(idx)
-            self.tree_view.scrollTo(idx)
-            self.tree_view.setCurrentIndex(idx)
-            self._load_folder(last)
+        import threading
+        result = [False]
+        def check():
+            try:
+                p = Path(last)
+                result[0] = p.is_dir() and p != p.parent
+            except Exception:
+                pass
+        t = threading.Thread(target=check, daemon=True)
+        t.start()
+        t.join(1.5)
+        if result[0]:
+            self._load_folder(last)  # skip fs_model.index() — crashes on network paths
 
     def _load_token(self):
         return self._load_config().get('discogs_token', '')
@@ -1656,6 +1916,15 @@ class MainWindow(QMainWindow):
         self.cover_scan_btn.setToolTip("Scannt alle Unterordner auf kaputte/fehlende Cover")
         self.cover_scan_btn.clicked.connect(self._open_cover_scan)
 
+        self.cancel_scan_btn = QPushButton("✕ Abbrechen")
+        self.cancel_scan_btn.setStyleSheet("""
+            QPushButton { min-height:24px; padding:2px 10px; font-size:12px; font-weight:600;
+                          background-color:transparent; color:#f38ba8; border:1px solid #f38ba8; border-radius:5px; }
+            QPushButton:hover { background-color:#4a2a2e; }
+        """)
+        self.cancel_scan_btn.setVisible(False)
+        self.cancel_scan_btn.clicked.connect(self._cancel_scan)
+
         toolbar_layout.addWidget(self.discogs_btn)
         toolbar_layout.addWidget(self.rename_btn)
         toolbar_layout.addSpacing(10)
@@ -1663,6 +1932,7 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.deselect_btn)
         toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(self.cover_scan_btn)
+        toolbar_layout.addWidget(self.cancel_scan_btn)
         toolbar_layout.addStretch()
 
         self.folder_label = QLabel("Kein Ordner ausgewählt")
@@ -1684,48 +1954,130 @@ class MainWindow(QMainWindow):
         tree_label.setObjectName("heading")
         tree_layout.addWidget(tree_label)
 
+        # Special folder quick-access
+        from PyQt6.QtCore import QStandardPaths
+        special = [
+            ('🎵 Musik',     QStandardPaths.StandardLocation.MusicLocation),
+            ('⬇ Downloads', QStandardPaths.StandardLocation.DownloadLocation),
+            ('🖥 Desktop',  QStandardPaths.StandardLocation.DesktopLocation),
+            ('📄 Dokumente', QStandardPaths.StandardLocation.DocumentsLocation),
+            ('🎬 Videos',   QStandardPaths.StandardLocation.MoviesLocation),
+        ]
+        quick_widget = QWidget()
+        quick_widget.setStyleSheet("background-color: #181825;")
+        quick_layout = QVBoxLayout(quick_widget)
+        quick_layout.setContentsMargins(4, 4, 4, 2)
+        quick_layout.setSpacing(1)
+        quick_btn_style = ("QPushButton { text-align:left; background:transparent; color:#a6adc8;"
+                           " border:none; padding:3px 6px; font-size:12px; border-radius:4px; }"
+                           "QPushButton:hover { background:#313244; color:#cdd6f4; }")
+        for label, loc in special:
+            paths = QStandardPaths.standardLocations(loc)
+            if paths:
+                path = paths[0]
+                btn = QPushButton(label)
+                btn.setStyleSheet(quick_btn_style)
+                btn.clicked.connect(lambda checked, p=path: self._navigate_tree(p))
+                quick_layout.addWidget(btn)
+        tree_layout.addWidget(quick_widget)
+
+        sep = QLabel()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background-color: #313244;")
+        tree_layout.addWidget(sep)
+
         self.fs_model = QFileSystemModel()
+        # Disable file watcher — prevents crashes on network/UNC paths
+        self.fs_model.setOption(QFileSystemModel.Option.DontWatchForChanges)
         self.fs_model.setRootPath('')
         self.fs_model.setFilter(QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot)
-
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.fs_model)
         self.tree_view.setRootIndex(self.fs_model.index(''))
         for col in range(1, 4):
             self.tree_view.hideColumn(col)
         self.tree_view.setHeaderHidden(True)
-        self.tree_view.clicked.connect(self._on_folder_clicked)
         self.tree_view.setAnimated(True)
-        self.tree_view.setIndentation(16)
-        # Base64 SVG arrows — the only reliable way to show branch indicators in Qt stylesheets
-        arrow_right = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHZpZXdCb3g9IjAgMCAxMCAxMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cG9seWdvbiBwb2ludHM9IjIsMSA4LDUgMiw5IiBmaWxsPSIjNTg1YjcwIi8+PC9zdmc+"
-        arrow_down  = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHZpZXdCb3g9IjAgMCAxMCAxMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cG9seWdvbiBwb2ludHM9IjEsMiA5LDIgNSw4IiBmaWxsPSIjODllNGZhIi8+PC9zdmc+"
-        self.tree_view.setStyleSheet(f"""
+        self.tree_view.setIndentation(12)
+        self.tree_view.setStyleSheet("""
+            QTreeView { background-color: #181825; }
+            QTreeView::item { padding: 3px 4px; min-height: 20px; }
+            QTreeView::item:hover { background-color: #2a2a3e; }
+            QTreeView::item:selected { background-color: #313244; color: #89b4fa; }
+            QTreeView::branch { background-color: #181825; }
             QTreeView::branch:has-children:!has-siblings:closed,
-            QTreeView::branch:closed:has-children:has-siblings {{
-                image: url("{arrow_right}");
-            }}
+            QTreeView::branch:closed:has-children:has-siblings { border-image: none; image: none; }
             QTreeView::branch:open:has-children:!has-siblings,
-            QTreeView::branch:open:has-children:has-siblings {{
-                image: url("{arrow_down}");
-            }}
+            QTreeView::branch:open:has-children:has-siblings { border-image: none; image: none; }
         """)
+
+        class ArrowDelegate(QStyledItemDelegate):
+            def __init__(self, view):
+                super().__init__(view)
+                self._view = view
+            def initStyleOption(self, option, index):
+                super().initStyleOption(option, index)
+                if index.model() and index.model().hasChildren(index):
+                    arrow = '▼ ' if self._view.isExpanded(index) else '▶ '
+                    option.text = arrow + option.text
+                else:
+                    option.text = '    ' + option.text
+
+        self.tree_view.setItemDelegate(ArrowDelegate(self.tree_view))
+        self.tree_view.clicked.connect(self._on_folder_clicked)
         tree_layout.addWidget(self.tree_view)
 
-        # Cover preview at bottom of left panel
-        self.cover_preview = QLabel("Kein Cover")
+        # Cover previews: folder.jpg (left) + tag cover (right)
+        cover_row = QHBoxLayout()
+        cover_row.setSpacing(4)
+
+        cover_lbl_style = ("background-color:#1e1e2e; border:1px solid #313244;"
+                           "border-radius:5px; color:#45475a; font-size:10px;")
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(2)
+        folder_hdr = QLabel("folder.jpg")
+        folder_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        folder_hdr.setStyleSheet("color:#6c7086; font-size:10px;")
+        left_col.addWidget(folder_hdr)
+        self.folder_cover = QLabel("–")
+        self.folder_cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.folder_cover.setFixedSize(128, 128)
+        self.folder_cover.setStyleSheet(cover_lbl_style)
+        self.folder_cover.setScaledContents(False)
+        left_col.addWidget(self.folder_cover)
+        cover_row.addLayout(left_col)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(2)
+        tag_hdr = QLabel("Tag Cover")
+        tag_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tag_hdr.setStyleSheet("color:#6c7086; font-size:10px;")
+        right_col.addWidget(tag_hdr)
+        self.cover_preview = QLabel("–")
         self.cover_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cover_preview.setFixedHeight(130)
-        self.cover_preview.setStyleSheet(
-            "background-color: #24273a; border: 1px solid #313244; "
-            "border-radius: 6px; color: #585b70; font-size: 11px;"
-        )
-        tree_layout.addWidget(self.cover_preview)
+        self.cover_preview.setFixedSize(128, 128)
+        self.cover_preview.setStyleSheet(cover_lbl_style)
+        self.cover_preview.setScaledContents(False)
+        right_col.addWidget(self.cover_preview)
+        cover_row.addLayout(right_col)
+
+        tree_layout.addLayout(cover_row)
+
+        self.folder_to_tag_btn = QPushButton("folder.jpg als Tag-Cover setzen")
+        self.folder_to_tag_btn.setVisible(False)
+        self.folder_to_tag_btn.setStyleSheet("""
+            QPushButton { background-color:#313244; color:#a6e3a1; border:1px solid #a6e3a1;
+                          border-radius:5px; padding:3px 8px; font-size:11px; }
+            QPushButton:hover { background-color:#3a4a3a; }
+        """)
+        self.folder_to_tag_btn.clicked.connect(self._write_folder_jpg_to_tags)
+        tree_layout.addWidget(self.folder_to_tag_btn)
 
         self.cover_info_label = QLabel("")
         self.cover_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cover_info_label.setStyleSheet("color: #6c7086; font-size: 10px;")
-        self.cover_info_label.setFixedHeight(16)
+        self.cover_info_label.setFixedHeight(14)
         tree_layout.addWidget(self.cover_info_label)
 
         splitter.addWidget(tree_widget)
@@ -1771,35 +2123,82 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Bereit")
 
+    def _navigate_tree(self, path):
+        """Expand the tree to show path and select it (without scanning)."""
+        def do_navigate():
+            try:
+                idx = self.fs_model.index(path)
+                if idx.isValid():
+                    self.tree_view.setCurrentIndex(idx)
+                    self.tree_view.expand(idx)
+                    self.tree_view.scrollTo(idx)
+            except Exception:
+                pass
+        QTimer.singleShot(0, do_navigate)
+
     def _on_folder_clicked(self, index):
         path = self.fs_model.filePath(index)
-        self._load_folder(path)
+        if path:
+            self._load_folder(path)
 
     def _load_folder(self, path):
         self._current_folder = path
         self._save_config({'last_folder': path})
         self.folder_label.setText(path)
-        self.cover_scan_btn.setEnabled(True)
-        folder = Path(path)
-        # Load tags first so we can sort by album → track naturally
-        raw = [(p, load_mp3_tags(str(p))) for p in folder.rglob('*.mp3')]
-        raw.sort(key=lambda x: (
-            x[1].get('album', '').lower(),
-            natural_sort_key(x[0])
-        ))
-        mp3_files = [p for p, _ in raw]
-        prefetched = {str(p): t for p, t in raw}
+        self.cover_scan_btn.setEnabled(False)
+        self.discogs_btn.setEnabled(False)
+        self.rename_btn.setEnabled(False)
 
+        # Each scan gets a unique ID — stale results from old scans are dropped
+        self._scan_id = getattr(self, '_scan_id', 0) + 1
+        current_id = self._scan_id
+
+        # Cancel any running scan
+        if hasattr(self, '_scan_thread') and self._scan_thread.isRunning():
+            self._scan_thread.cancel()
+            self._scan_thread.wait(300)
+
+        # Clear table
         self._files = []
         self.file_table.setSortingEnabled(False)
         self.file_table.setRowCount(0)
-        self.file_table.setRowCount(len(mp3_files))
+        self.cancel_scan_btn.setVisible(True)
+        self.status_bar.showMessage(f"Scanne {path} …")
 
-        for i, mp3_path in enumerate(mp3_files):
-            tags = prefetched[str(mp3_path)]
-            self._files.append((str(mp3_path), tags))
+        self._scan_thread = FolderScanThread(path)
+        self._scan_thread.progress.connect(self._on_scan_progress)
+        self._scan_thread.scan_done.connect(
+            lambda results, sid=current_id: self._on_scan_done(results, sid)
+        )
+        self._scan_thread.start()
 
-            # Col 0: cover indicator
+    def _cancel_scan(self):
+        if hasattr(self, '_scan_thread'):
+            self._scan_thread.cancel()
+        self._scan_id = getattr(self, '_scan_id', 0) + 1  # invalidate pending result
+        self.cancel_scan_btn.setVisible(False)
+        self.status_bar.showMessage("Scan abgebrochen")
+
+    def _on_scan_progress(self, count, filename):
+        self.status_bar.showMessage(f"Lese … {count} Dateien  —  {filename}")
+
+    def _on_scan_done(self, results, scan_id):
+        if scan_id != self._scan_id:
+            return  # stale result from a cancelled/replaced scan — discard
+        self.cancel_scan_btn.setVisible(False)
+        self.cover_scan_btn.setEnabled(True)
+        self._populate_file_table(results)
+        self._update_folder_cover()  # folder.jpg — independent of selection
+
+    def _populate_file_table(self, raw):
+        self._files = []
+        self.file_table.setSortingEnabled(False)
+        self.file_table.setRowCount(len(raw))
+
+        for i, (path_str, tags) in enumerate(raw):
+            mp3_path = Path(path_str)
+            self._files.append((path_str, tags))
+
             has_cover = tags['cover'] is not None
             cover_item = QTableWidgetItem('♪' if has_cover else '')
             cover_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1810,9 +2209,8 @@ class MainWindow(QMainWindow):
             track = tags['tracknumber'].split('/')[0]
             self.file_table.setItem(i, 1, QTableWidgetItem(track.zfill(2) if track else ''))
 
-            # Col 2: filename — store full path in UserRole for sort-safe lookup
             fname_item = QTableWidgetItem(mp3_path.name)
-            fname_item.setData(Qt.ItemDataRole.UserRole, str(mp3_path))
+            fname_item.setData(Qt.ItemDataRole.UserRole, path_str)
             self.file_table.setItem(i, 2, fname_item)
 
             self.file_table.setItem(i, 3, QTableWidgetItem(tags['artist']))
@@ -1825,7 +2223,7 @@ class MainWindow(QMainWindow):
         self.file_table.setSortingEnabled(True)
         self._select_all()
         self.status_bar.showMessage(
-            f"{len(mp3_files)} MP3-Datei(en) geladen  —  {path}"
+            f"{len(raw)} MP3-Datei(en) geladen  —  {self._current_folder}"
         )
 
     def _select_all(self):
@@ -1849,37 +2247,85 @@ class MainWindow(QMainWindow):
         # Show cover of the last-clicked (or first selected) file
         self._update_cover_preview(rows)
 
-    def _update_cover_preview(self, rows):
-        if not rows:
-            self.cover_preview.setText("Kein Cover")
-            self.cover_preview.setPixmap(QPixmap())
-            self.cover_info_label.setText("")
-            return
-        path = self.file_table.item(rows[0].row(), 2).data(Qt.ItemDataRole.UserRole)
-        if not path:
-            return
-        path_to_tags = {p: t for p, t in self._files}
-        tags = path_to_tags.get(path, {})
-        cover_data = tags.get('cover')
-        if cover_data:
-            pix = image_data_to_pixmap(cover_data, 178)
+    def _set_cover_label(self, label, data, size=124):
+        if data:
+            pix = image_data_to_pixmap(data, size)
             if pix:
-                self.cover_preview.setPixmap(pix)
-                self.cover_preview.setText("")
-                try:
-                    orig = Image.open(BytesIO(cover_data))
-                    self.cover_info_label.setText(
-                        f"{orig.width}×{orig.height} px  {len(cover_data)//1024} KB"
-                    )
-                except Exception:
-                    self.cover_info_label.setText("")
+                label.setPixmap(pix)
+                label.setText("")
+                return True
             else:
-                self.cover_preview.setText("Cover Fehler")
+                label.setPixmap(QPixmap())
+                label.setText("Fehler")
+        else:
+            label.setPixmap(QPixmap())
+            label.setText("–")
+        return False
+
+    def _update_folder_cover(self):
+        """Load and show folder.jpg — called once after folder scan completes."""
+        self._current_folder_jpg = None
+        folder_jpg_data = None
+        if self._current_folder:
+            fjpg = Path(self._current_folder) / 'folder.jpg'
+            if fjpg.exists():
+                try:
+                    folder_jpg_data = fjpg.read_bytes()
+                    self._current_folder_jpg = folder_jpg_data
+                except Exception:
+                    pass
+        self._set_cover_label(self.folder_cover, folder_jpg_data)
+        self._refresh_folder_btn()
+
+    def _refresh_folder_btn(self):
+        """Show 'folder.jpg → Tag' button when folder.jpg exists but current tag cover is missing."""
+        has_folder_jpg = self._current_folder_jpg is not None
+        # Check first selected file (or first file if none selected)
+        rows = self.file_table.selectionModel().selectedRows()
+        tag_cover = None
+        source_rows = rows if rows else []
+        if not source_rows and self._files:
+            # No selection — check first file
+            for r in range(self.file_table.rowCount()):
+                p = self.file_table.item(r, 2)
+                if p:
+                    path = p.data(Qt.ItemDataRole.UserRole)
+                    tag_cover = {p: t for p, t in self._files}.get(path, {}).get('cover')
+                    break
+        elif source_rows:
+            path = self.file_table.item(source_rows[0].row(), 2).data(Qt.ItemDataRole.UserRole)
+            tag_cover = {p: t for p, t in self._files}.get(path, {}).get('cover')
+        self.folder_to_tag_btn.setVisible(has_folder_jpg and tag_cover is None)
+
+    def _update_cover_preview(self, rows):
+        """Update tag cover display based on current selection."""
+        tag_cover_data = None
+        if rows:
+            path = self.file_table.item(rows[0].row(), 2).data(Qt.ItemDataRole.UserRole)
+            if path:
+                tag_cover_data = {p: t for p, t in self._files}.get(path, {}).get('cover')
+        elif self._files:
+            # Nothing selected — show cover from first file
+            for r in range(min(self.file_table.rowCount(), 1)):
+                p = self.file_table.item(r, 2)
+                if p:
+                    path = p.data(Qt.ItemDataRole.UserRole)
+                    tag_cover_data = {p: t for p, t in self._files}.get(path, {}).get('cover')
+
+        if tag_cover_data:
+            self._set_cover_label(self.cover_preview, tag_cover_data)
+            try:
+                orig = Image.open(BytesIO(tag_cover_data))
+                self.cover_info_label.setText(
+                    f"Tag: {orig.width}×{orig.height}px  {len(tag_cover_data)//1024}KB"
+                )
+            except Exception:
                 self.cover_info_label.setText("")
         else:
-            self.cover_preview.setText("Kein Cover")
-            self.cover_preview.setPixmap(QPixmap())
+            self._set_cover_label(self.cover_preview, None)
             self.cover_info_label.setText("")
+
+        self._refresh_folder_btn()
 
     def _get_selected_files(self):
         # Use path stored in UserRole (col 2) — safe even when table is sorted
@@ -1990,6 +2436,28 @@ class MainWindow(QMainWindow):
         if self._current_folder:
             self._load_folder(self._current_folder)
 
+    def _write_folder_jpg_to_tags(self):
+        if not self._current_folder_jpg:
+            return
+        try:
+            cover_bytes = resize_cover(self._current_folder_jpg, 600)
+        except Exception:
+            cover_bytes = self._current_folder_jpg
+        selected = self._get_selected_files()
+        if not selected:
+            selected = self._files
+        errors = []
+        for path, _ in selected:
+            ok = write_mp3_tags(path, {}, cover_bytes)
+            if not ok:
+                errors.append(path)
+        if self._current_folder:
+            self._load_folder(self._current_folder)
+        msg = f"{len(selected)} Datei(en) mit folder.jpg getaggt."
+        if errors:
+            msg += f"  {len(errors)} Fehler."
+        self.status_bar.showMessage(msg)
+
     def _open_cover_scan(self):
         if not self._current_folder:
             return
@@ -2004,11 +2472,34 @@ class MainWindow(QMainWindow):
             self._save_token(self._discogs_token)
 
 
+def _make_icon():
+    """Generate app icon programmatically via Pillow."""
+    try:
+        from PIL import ImageDraw, ImageFont
+        img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        # Rounded background
+        d.rounded_rectangle([0, 0, 63, 63], radius=14, fill='#1e1e2e')
+        # Tag shape
+        d.polygon([(6,10),(42,10),(58,32),(42,54),(6,54)], outline='#cba6f7', width=3)
+        d.ellipse([12,26,22,36], fill='#cba6f7')
+        # Music note
+        d.text((34, 18), '♪', fill='#89b4fa', font=ImageFont.load_default(size=22))
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        pix = QPixmap()
+        pix.loadFromData(buf.getvalue())
+        return QIcon(pix)
+    except Exception:
+        return QIcon()
+
+
 def main():
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')        # must come before setStyleSheet
     app.setStyleSheet(DARK_STYLE)
-    app.setStyle('Fusion')
     window = MainWindow()
+    window.setWindowIcon(_make_icon())
     window.show()
     sys.exit(app.exec())
 
