@@ -1175,12 +1175,13 @@ class DiscogsDialog(QDialog):
 class RenameDialog(QDialog):
     masks_changed = pyqtSignal(list)
 
-    def __init__(self, files, masks=None, parent=None):
+    def __init__(self, files, masks=None, last_mask='', parent=None):
         super().__init__(parent)
         self.setWindowTitle("Dateien umbenennen")
         self.setMinimumSize(750, 520)
         self.files = files
         self._masks = masks or ["%6-%2", "%1 - %6 - %2", "%1\\[%4] %3\\%6 - %2"]
+        self._last_mask = last_mask
         self._build_ui()
 
     def _build_ui(self):
@@ -1199,7 +1200,9 @@ class RenameDialog(QDialog):
         self.mask_input = QComboBox()
         self.mask_input.setEditable(True)
         self.mask_input.addItems(self._masks)
-        if self._masks:
+        if self._last_mask and self._last_mask in self._masks:
+            self.mask_input.setCurrentText(self._last_mask)
+        elif self._masks:
             self.mask_input.setCurrentText(self._masks[0])
         mask_row.addWidget(self.mask_input, stretch=1)
 
@@ -1327,6 +1330,11 @@ class RenameDialog(QDialog):
 
     def _do_rename(self):
         mask = self.mask_input.currentText()
+        # Persist last used mask
+        self.masks_changed.emit(list(self._masks))  # save mask list
+        parent = self.parent()
+        if parent and hasattr(parent, '_save_config'):
+            parent._save_config({'last_rename_mask': mask})
         errors = []
         renamed = 0
         moved_folders = set()
@@ -2495,7 +2503,8 @@ class MainWindow(QMainWindow):
             tags = load_mp3_tags(path)
             fresh.append((path, tags))
         masks = self._load_masks()
-        dlg = RenameDialog(fresh, masks=masks, parent=self)
+        last_mask = self._load_config().get('last_rename_mask', '')
+        dlg = RenameDialog(fresh, masks=masks, last_mask=last_mask, parent=self)
         dlg.masks_changed.connect(self._save_masks)
         dlg.exec()
         if self._current_folder:
