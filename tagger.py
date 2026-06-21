@@ -30,7 +30,7 @@ from PyQt6.QtGui import (
 
 from mutagen.mp3 import MP3
 from mutagen.id3 import (
-    ID3, ID3NoHeaderError, TIT2, TPE1, TALB, TDRC, TCON, TRCK,
+    ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TDRC, TCON, TRCK,
     APIC, TPOS, TPUB, COMM
 )
 from mutagen.id3._util import ID3NoHeaderError
@@ -350,6 +350,14 @@ def write_mp3_tags(path, tag_data, cover_data=None):
         if tag_data.get('tracknumber'):
             id3['TRCK'] = TRCK(encoding=3, text=str(tag_data['tracknumber']))
 
+        if tag_data.get('album_artist'):
+            id3['TPE2'] = TPE2(encoding=3, text=tag_data['album_artist'])
+        elif tag_data.get('artist'):
+            # Write artist as album artist unless existing TPE2 contains "various"
+            existing_tpe2 = str(id3.get('TPE2', ''))
+            if 'various' not in existing_tpe2.lower():
+                id3['TPE2'] = TPE2(encoding=3, text=tag_data['artist'])
+
         if cover_data:
             # Remove ALL existing APIC frames first (corrupt or otherwise)
             for key in list(id3.keys()):
@@ -540,60 +548,417 @@ class DiscogsDetailThread(QThread):
             self.error.emit(str(e))
 
 
-class DiscogsDialog(QDialog):
-    tags_accepted = pyqtSignal(dict, bytes)  # tag_data, cover_data
+class DropCoverLabel(QLabel):
+    """Cover-Vorschau mit Drag & Drop Support für Bilder aus Browser oder Explorer."""
+    cover_changed = pyqtSignal(bytes)
 
-    def __init__(self, prefill, file_count, discogs_token=None, cfg_save=None, cfg_load=None, parent=None):
+    _BASE_STYLE = ("background-color:#1e1e2e; border:2px dashed {border};"
+                   "border-radius:8px; color:{color}; font-size:11px;")
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Discogs Suche")
-        self.setMinimumSize(1000, 650)
-        self.discogs_token = discogs_token
-        self.current_detail = None
-        self.cover_data = None
-        self._cfg_save = cfg_save  # callable(dict)
-        self._cfg_load = cfg_load  # callable() -> dict
-        self._build_ui(prefill, file_count)
+        self.setAcceptDrops(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setText("Kein Cover\n(Bild hierher ziehen)")
+        self._cover_data = None
+        self._set_idle()
 
-    def _build_ui(self, prefill, file_count):
+    def _set_idle(self):
+        self.setStyleSheet(self._BASE_STYLE.format(border='#45475a', color='#585b70'))
+
+    def _set_hover(self):
+        self.setStyleSheet(self._BASE_STYLE.format(border='#89b4fa', color='#89b4fa'))
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls() or event.mimeData().hasImage():
+            event.acceptProposedAction()
+            self._set_hover()
+
+    def dragLeaveEvent(self, event):
+        self._set_idle()
+
+    def dropEvent(self, event):
+        self._set_idle()
+        data = None
+        if event.mimeData().hasUrls():
+            url = event.mimeData().urls()[0]
+            try:
+                if url.isLocalFile():
+                    data = Path(url.toLocalFile()).read_bytes()
+                else:
+                    r = requests.get(url.toString(), timeout=15,
+                                     headers={'User-Agent': 'TagMeGently/1.0'})
+                    data = r.content
+            except Exception as e:
+                print(f"Cover drop error: {e}")
+        elif event.mimeData().hasImage():
+            qimg = QImage(event.mimeData().imageData())
+            if not qimg.isNull():
+                qimg = qimg.convertToFormat(QImage.Format.Format_RGB888)
+                w, h = qimg.width(), qimg.height()
+                ptr = qimg.bits()
+                ptr.setsize(w * h * 3)
+                pil_img = Image.frombuffer('RGB', (w, h), bytes(ptr))
+                buf = BytesIO()
+                pil_img.save(buf, format='JPEG', quality=90)
+                data = buf.getvalue()
+        if data:
+            self.set_cover(data)
+            self.cover_changed.emit(data)
+
+    def set_cover(self, data):
+        self._cover_data = data
+        size = self.width() or 160
+        pix = image_data_to_pixmap(data, size - 4)
+        if pix:
+            self.setPixmap(pix)
+            self.setText("")
+        else:
+            self.setText("Cover Fehler")
+        self._set_idle()
+
+    def get_cover_data(self):
+        return self._cover_data
+
+
+class TrackMatchDialog(QDialog):
+    """Zeigt lokale Dateien neben Discogs-Trackliste zum manuellen Abgleich."""
+    tags_accepted = pyqtSignal(list)   # [(path, tag_dict, cover_bytes), ...]
+
+    def __init__(self, files, detail, cfg_save=None, cfg_load=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Album Informationen")
+        self.setMinimumSize(980, 700)
+        self._detail = detail
+        self._tracklist = detail.get('tracklist', [])
+        self._cfg_save = cfg_save
+        self._cfg_load = cfg_load
+
+        # File paths (reorderable); pad with None if Discogs has more tracks
+        paths = [f[0] for f in files]
+        while len(paths) < len(self._tracklist):
+            paths.append(None)
+        self._file_paths = paths
+
+        self._build_ui()
+        self._fill_table()
+        self._fill_meta(detail)
+        if detail.get('cover_data'):
+            self.cover_label.set_cover(detail['cover_data'])
+        self._check_compilation()
+
+    def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(6)
 
-        # Search bar
-        search_group = QGroupBox("Suche")
-        sg_layout = QGridLayout(search_group)
+        # ── Toolbar ──
+        tb = QHBoxLayout()
+        for label, slot in [("☑ Alle", self._select_all), ("☐ Keine", self._select_none),
+                             ("▲ Hoch", self._move_up), ("▼ Runter", self._move_down)]:
+            b = QPushButton(label)
+            b.setObjectName("secondary")
+            b.setFixedHeight(26)
+            b.clicked.connect(slot)
+            tb.addWidget(b)
+        tb.addStretch()
+        cover_btn = QPushButton("🔍 Suche Cover Bild")
+        cover_btn.setFixedHeight(26)
+        cover_btn.clicked.connect(self._search_cover)
+        tb.addWidget(cover_btn)
+        layout.addLayout(tb)
 
-        sg_layout.addWidget(QLabel("Künstler:"), 0, 0)
+        # ── Track matching table ──
+        self.match_table = QTableWidget(0, 4)
+        self.match_table.setHorizontalHeaderLabels(["", "Dateiname", "Titel (Discogs)", "Track"])
+        hh = self.match_table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.match_table.setColumnWidth(0, 28)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.match_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.match_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.match_table.setAlternatingRowColors(True)
+        self.match_table.setShowGrid(False)
+        self.match_table.verticalHeader().setVisible(False)
+        self.match_table.verticalHeader().setDefaultSectionSize(22)
+        self.match_table.cellClicked.connect(self._on_cell_clicked)
+        self._move_files = True  # True=move files, False=move discogs tracks
+        layout.addWidget(self.match_table, stretch=1)
+
+        # ── Meta + Cover ──
+        bottom = QHBoxLayout()
+        bottom.setSpacing(12)
+
+        # Meta fields
+        meta = QWidget()
+        mg = QGridLayout(meta)
+        mg.setSpacing(6)
+        mg.setContentsMargins(0, 0, 0, 0)
+
+        saved = self._cfg_load() if self._cfg_load else {}
+        cb_s = saved.get('trackmatch_checkboxes', {})
+
+        self.cb_title = QCheckBox("Song Titel")
+        self.cb_title.setChecked(cb_s.get('title', True))
+        self.cb_tracknr = QCheckBox("Track Nummern")
+        self.cb_tracknr.setChecked(cb_s.get('tracknr', True))
+        self.cb_compilation = QCheckBox("Compilation (Various Artists)")
+        self.cb_compilation.setChecked(False)
+        mg.addWidget(self.cb_title, 0, 0)
+        mg.addWidget(self.cb_tracknr, 0, 1)
+        mg.addWidget(self.cb_compilation, 0, 2, 1, 2)
+
+        rows = [
+            ('cb_artist', 'artist_inp', 'Künstler', True),
+            ('cb_album',  'album_inp',  'Album',    True),
+            ('cb_year',   'year_inp',   'Jahr',     True),
+            ('cb_genre',  'genre_inp',  'Genre',    True),
+            ('cb_label',  'label_inp',  'Label',    False),
+        ]
+        for r, (cb_attr, inp_attr, lbl, default) in enumerate(rows, 1):
+            cb = QCheckBox(lbl + ':')
+            cb.setChecked(cb_s.get(cb_attr, default))
+            setattr(self, cb_attr, cb)
+            inp = QLineEdit()
+            setattr(self, inp_attr, inp)
+            mg.addWidget(cb, r, 0)
+            mg.addWidget(inp, r, 1, 1, 3)
+
+        bottom.addWidget(meta, stretch=3)
+
+        # Cover
+        cv = QVBoxLayout()
+        self.cover_label = DropCoverLabel()
+        self.cover_label.setFixedSize(160, 160)
+        self.cover_label.cover_changed.connect(self._on_cover_changed)
+        cv.addWidget(self.cover_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.cover_info = QLabel("")
+        self.cover_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cover_info.setStyleSheet("color:#6c7086; font-size:10px;")
+        cv.addWidget(self.cover_info)
+        self.cb_cover = QCheckBox("Cover speichern")
+        self.cb_cover.setChecked(cb_s.get('cover', True))
+        cv.addWidget(self.cb_cover, alignment=Qt.AlignmentFlag.AlignHCenter)
+        cv.addStretch()
+        bottom.addLayout(cv, stretch=1)
+        layout.addLayout(bottom)
+
+        # ── Buttons ──
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel = QPushButton("Abbrechen")
+        cancel.setObjectName("secondary")
+        cancel.clicked.connect(self.reject)
+        write = QPushButton("Schreibe ID-Tags")
+        write.clicked.connect(self._write_tags)
+        btn_row.addWidget(cancel)
+        btn_row.addWidget(write)
+        layout.addLayout(btn_row)
+
+    def _fill_table(self):
+        n = max(len(self._file_paths), len(self._tracklist))
+        self.match_table.setRowCount(n)
+        total = len(self._tracklist)
+        for i in range(n):
+            path = self._file_paths[i] if i < len(self._file_paths) else None
+            track = self._tracklist[i] if i < len(self._tracklist) else {}
+
+            cb_item = QTableWidgetItem()
+            if path:
+                cb_item.setCheckState(Qt.CheckState.Checked)
+            else:
+                cb_item.setCheckState(Qt.CheckState.Unchecked)
+                cb_item.setFlags(cb_item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            self.match_table.setItem(i, 0, cb_item)
+
+            if path:
+                fn = QTableWidgetItem(Path(path).name)
+            else:
+                fn = QTableWidgetItem("Datei nicht gefunden!")
+                fn.setForeground(QColor('#f38ba8'))
+            self.match_table.setItem(i, 1, fn)
+
+            self.match_table.setItem(i, 2, QTableWidgetItem(track.get('title', '')))
+            pos = track.get('position', '')
+            self.match_table.setItem(i, 3, QTableWidgetItem(f"{pos}/{total}" if pos else ''))
+
+    def _fill_meta(self, detail):
+        self.artist_inp.setText(detail.get('artist', ''))
+        self.album_inp.setText(detail.get('album', ''))
+        self.year_inp.setText(detail.get('year', ''))
+        self.genre_inp.setText(detail.get('genre') or detail.get('style', ''))
+        self.label_inp.setText(detail.get('label', ''))
+
+    def _check_compilation(self):
+        if any(' /// ' in t.get('title', '') for t in self._tracklist):
+            self.cb_compilation.setChecked(True)
+
+    def _on_cell_clicked(self, row, col):
+        self._move_files = (col <= 1)
+
+    def _select_all(self):
+        for i in range(self.match_table.rowCount()):
+            it = self.match_table.item(i, 0)
+            if it and (it.flags() & Qt.ItemFlag.ItemIsEnabled):
+                it.setCheckState(Qt.CheckState.Checked)
+
+    def _select_none(self):
+        for i in range(self.match_table.rowCount()):
+            it = self.match_table.item(i, 0)
+            if it and (it.flags() & Qt.ItemFlag.ItemIsEnabled):
+                it.setCheckState(Qt.CheckState.Unchecked)
+
+    def _move_up(self):
+        rows = [i.row() for i in self.match_table.selectionModel().selectedRows()]
+        if not rows or min(rows) == 0:
+            return
+        r = rows[0]
+        if self._move_files:
+            if r < len(self._file_paths):
+                self._file_paths[r], self._file_paths[r-1] = self._file_paths[r-1], self._file_paths[r]
+        else:
+            if r < len(self._tracklist):
+                self._tracklist[r], self._tracklist[r-1] = self._tracklist[r-1], self._tracklist[r]
+        self._fill_table()
+        self.match_table.selectRow(r - 1)
+
+    def _move_down(self):
+        rows = [i.row() for i in self.match_table.selectionModel().selectedRows()]
+        if not rows or max(rows) >= self.match_table.rowCount() - 1:
+            return
+        r = rows[0]
+        if self._move_files:
+            if r < len(self._file_paths) - 1:
+                self._file_paths[r], self._file_paths[r+1] = self._file_paths[r+1], self._file_paths[r]
+        else:
+            if r < len(self._tracklist) - 1:
+                self._tracklist[r], self._tracklist[r+1] = self._tracklist[r+1], self._tracklist[r]
+        self._fill_table()
+        self.match_table.selectRow(r + 1)
+
+    def _search_cover(self):
+        import webbrowser
+        from urllib.parse import quote
+        artist = self.artist_inp.text()
+        album  = self.album_inp.text()
+        year   = self.year_inp.text()
+        q = quote(f"{artist} {album} {year} cover")
+        webbrowser.open(f"https://www.google.com/images?hl=&q={q}&tbs=isz:lt,islt:qsvga")
+
+    def _on_cover_changed(self, data):
+        try:
+            img = Image.open(BytesIO(data))
+            self.cover_info.setText(f"{img.width}×{img.height} px  {len(data)//1024} KB")
+        except Exception:
+            pass
+
+    def _write_tags(self):
+        # Save checkbox states
+        if self._cfg_save:
+            self._cfg_save({'trackmatch_checkboxes': {
+                'title': self.cb_title.isChecked(), 'tracknr': self.cb_tracknr.isChecked(),
+                'cb_artist': self.cb_artist.isChecked(), 'cb_album': self.cb_album.isChecked(),
+                'cb_year': self.cb_year.isChecked(), 'cb_genre': self.cb_genre.isChecked(),
+                'cb_label': self.cb_label.isChecked(), 'cover': self.cb_cover.isChecked(),
+            }})
+
+        compilation = self.cb_compilation.isChecked()
+        cover_bytes = b''
+        if self.cb_cover.isChecked() and self.cover_label.get_cover_data():
+            try:
+                cover_bytes = resize_cover(self.cover_label.get_cover_data(), 600)
+            except Exception:
+                pass
+
+        result = []
+        for i in range(self.match_table.rowCount()):
+            cb_item = self.match_table.item(i, 0)
+            if not cb_item or cb_item.checkState() != Qt.CheckState.Checked:
+                continue
+            path = self._file_paths[i] if i < len(self._file_paths) else None
+            if not path:
+                continue
+            track = self._tracklist[i] if i < len(self._tracklist) else {}
+
+            td = {}
+            raw_title = track.get('title', '')
+            if self.cb_title.isChecked() and raw_title:
+                if compilation and ' /// ' in raw_title:
+                    parts = raw_title.split(' /// ', 1)
+                    td['title'] = parts[0].strip()
+                    td['track_artist'] = parts[1].strip()
+                else:
+                    td['title'] = raw_title
+
+            if self.cb_tracknr.isChecked() and track.get('position'):
+                td['tracknumber'] = f"{track['position']}/{len(self._tracklist)}"
+
+            artist = self.artist_inp.text()
+            if self.cb_artist.isChecked() and artist:
+                if compilation:
+                    td['artist'] = td.pop('track_artist', artist)
+                    td['album_artist'] = 'Various Artists'
+                else:
+                    td['artist'] = artist
+                    td['album_artist'] = artist
+
+            if self.cb_album.isChecked() and self.album_inp.text():
+                td['album'] = self.album_inp.text()
+            if self.cb_year.isChecked() and self.year_inp.text():
+                td['year'] = self.year_inp.text()
+            if self.cb_genre.isChecked() and self.genre_inp.text():
+                td['genre'] = self.genre_inp.text()
+            if self.cb_label.isChecked() and self.label_inp.text():
+                td['label'] = self.label_inp.text()
+
+            result.append((path, td, cover_bytes))
+
+        self.tags_accepted.emit(result)
+        self.accept()
+
+
+class DiscogsDialog(QDialog):
+    def __init__(self, prefill, files, discogs_token=None, cfg_save=None, cfg_load=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Discogs Suche  [{len(files)} Dateien markiert]")
+        self.setMinimumSize(860, 520)
+        self.discogs_token = discogs_token
+        self._files = files          # [(path, tags), ...]
+        self._cfg_save = cfg_save
+        self._cfg_load = cfg_load
+        self._current_detail = None
+        self._results = []
+        self._build_ui(prefill)
+
+    def _build_ui(self, prefill):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # ── Search bar ──
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Künstler:"))
         self.artist_input = QLineEdit(prefill.get('artist', ''))
-        sg_layout.addWidget(self.artist_input, 0, 1)
-
-        sg_layout.addWidget(QLabel("Album:"), 0, 2)
+        search_row.addWidget(self.artist_input, 3)
+        search_row.addWidget(QLabel("Album:"))
         self.album_input = QLineEdit(prefill.get('album', ''))
-        sg_layout.addWidget(self.album_input, 0, 3)
-
-        sg_layout.addWidget(QLabel("Jahr:"), 0, 4)
+        search_row.addWidget(self.album_input, 3)
+        search_row.addWidget(QLabel("Jahr:"))
         self.year_input = QLineEdit(prefill.get('year', ''))
-        self.year_input.setMaximumWidth(80)
-        sg_layout.addWidget(self.year_input, 0, 5)
-
+        self.year_input.setMaximumWidth(70)
+        search_row.addWidget(self.year_input)
         self.search_btn = QPushButton("Suchen")
         self.search_btn.clicked.connect(self._do_search)
-        sg_layout.addWidget(self.search_btn, 0, 6)
+        search_row.addWidget(self.search_btn)
+        layout.addLayout(search_row)
 
-        layout.addWidget(search_group)
-
-        # Results + Detail splitter
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        # Results table
-        results_widget = QWidget()
-        rl = QVBoxLayout(results_widget)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.addWidget(QLabel("Suchergebnisse:"))
+        # ── Results table ──
         self.results_table = QTableWidget(0, 5)
         self.results_table.setHorizontalHeaderLabels(
             ["Künstler / Album", "Jahr", "Label", "Format", "Land"]
         )
         self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.results_table.setAlternatingRowColors(True)
@@ -601,106 +966,34 @@ class DiscogsDialog(QDialog):
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.verticalHeader().setDefaultSectionSize(22)
         self.results_table.itemSelectionChanged.connect(self._on_result_selected)
-        rl.addWidget(self.results_table)
-        splitter.addWidget(results_widget)
+        self.results_table.doubleClicked.connect(self._load_album)
+        layout.addWidget(self.results_table)
 
-        # Detail panel
-        detail_widget = QWidget()
-        dl = QVBoxLayout(detail_widget)
-        dl.setContentsMargins(0, 0, 0, 0)
-        dl.addWidget(QLabel("Album Details:"))
-
-        # Cover
-        self.cover_label = QLabel("Kein Cover")
-        self.cover_label.setObjectName("cover")
-        self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cover_label.setFixedSize(200, 200)
-        dl.addWidget(self.cover_label, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        cover_info_layout = QHBoxLayout()
-        self.cover_size_label = QLabel("")
-        self.cover_size_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cover_info_layout.addWidget(self.cover_size_label)
-        dl.addLayout(cover_info_layout)
-
-        # Checkboxes for what to apply — restore saved state
-        saved = self._cfg_load() if self._cfg_load else {}
-        cb_state = saved.get('discogs_checkboxes', {})
-
-        self.cb_artist = QCheckBox("Künstler:")
-        self.cb_artist.setChecked(cb_state.get('artist', True))
-        self.detail_artist = QLineEdit()
-        self.cb_album = QCheckBox("Album:")
-        self.cb_album.setChecked(cb_state.get('album', True))
-        self.detail_album = QLineEdit()
-        self.cb_year = QCheckBox("Jahr:")
-        self.cb_year.setChecked(cb_state.get('year', True))
-        self.detail_year = QLineEdit()
-        self.cb_genre = QCheckBox("Genre:")
-        self.cb_genre.setChecked(cb_state.get('genre', True))
-        self.detail_genre = QLineEdit()
-        self.cb_label = QCheckBox("Label:")
-        self.cb_label.setChecked(cb_state.get('label', False))
-        self.detail_label = QLineEdit()
-        self.cb_tracknumber = QCheckBox("Track-Nr.")
-        self.cb_tracknumber.setChecked(cb_state.get('tracknumber', True))
-        self.cb_cover = QCheckBox("Cover (→ max 600×600)")
-        self.cb_cover.setChecked(cb_state.get('cover', True))
-
-        fields = [
-            (self.cb_artist, self.detail_artist),
-            (self.cb_album, self.detail_album),
-            (self.cb_year, self.detail_year),
-            (self.cb_genre, self.detail_genre),
-            (self.cb_label, self.detail_label),
-        ]
-        for cb, field in fields:
-            row = QHBoxLayout()
-            cb.setFixedWidth(110)
-            row.addWidget(cb)
-            row.addWidget(field)
-            dl.addLayout(row)
-
-        dl.addWidget(self.cb_tracknumber)
-        dl.addWidget(self.cb_cover)
-
-        # Tracklist preview
-        dl.addWidget(QLabel("Trackliste:"))
-        self.tracklist_widget = QTableWidget(0, 3)
-        self.tracklist_widget.setHorizontalHeaderLabels(["#", "Titel", "Zeit"])
-        self.tracklist_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.tracklist_widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.tracklist_widget.setMaximumHeight(180)
-        dl.addWidget(self.tracklist_widget)
-        dl.addStretch()
-
-        splitter.addWidget(detail_widget)
-        splitter.setSizes([550, 450])
-        layout.addWidget(splitter)
-
-        # Status + buttons
-        self.status_label = QLabel(f"Markierte Dateien: {file_count}")
-        self.status_label.setStyleSheet("color: #a6adc8;")
+        # ── Status + buttons ──
+        self.status_label = QLabel("Bereit")
+        self.status_label.setStyleSheet("color:#6c7086; font-size:11px;")
         layout.addWidget(self.status_label)
 
-        btn_layout = QHBoxLayout()
-        self.apply_btn = QPushButton("Tags schreiben")
-        self.apply_btn.setEnabled(False)
-        self.apply_btn.clicked.connect(self._apply_tags)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
         cancel_btn = QPushButton("Abbrechen")
         cancel_btn.setObjectName("secondary")
         cancel_btn.clicked.connect(self.reject)
-        btn_layout.addStretch()
-        btn_layout.addWidget(cancel_btn)
-        btn_layout.addWidget(self.apply_btn)
-        layout.addLayout(btn_layout)
+        self.load_btn = QPushButton("Lade Album!")
+        self.load_btn.setEnabled(False)
+        self.load_btn.clicked.connect(self._load_album)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(self.load_btn)
+        layout.addLayout(btn_row)
+
+        # Auto-search on open
+        QTimer.singleShot(100, self._do_search)
 
     def _do_search(self):
         self.search_btn.setEnabled(False)
-        self.status_label.setText("Suche läuft...")
+        self.load_btn.setEnabled(False)
+        self.status_label.setText("Suche läuft…")
         self.results_table.setRowCount(0)
-        self.apply_btn.setEnabled(False)
-
         self._search_thread = DiscogsSearchThread(
             self.artist_input.text().strip(),
             self.album_input.text().strip(),
@@ -714,25 +1007,38 @@ class DiscogsDialog(QDialog):
     def _on_results(self, results):
         self.search_btn.setEnabled(True)
         self._results = results
+        self._detail_cache = {}  # idx → detail dict
+        self.results_table.setColumnCount(6)
+        self.results_table.setHorizontalHeaderLabels(
+            ["🖼", "Künstler / Album", "Jahr", "Label", "Format", "Land"]
+        )
+        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.results_table.setColumnWidth(0, 26)
+        self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.results_table.setRowCount(len(results))
-        bold_font = QFont()
-        bold_font.setBold(True)
+        bold = QFont(); bold.setBold(True)
         for i, r in enumerate(results):
-            is_master = r.get('is_master', False)
-            title_text = ('★ ' if is_master else '') + r['title']
+            master = r.get('is_master', False)
+            has_cover = bool(r.get('cover_url', '')) and 'spacer' not in r.get('cover_url', '')
+            cov = QTableWidgetItem('🖼' if has_cover else '')
+            cov.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if has_cover:
+                cov.setForeground(QColor('#a6e3a1'))
+            self.results_table.setItem(i, 0, cov)
             items = [
-                QTableWidgetItem(title_text),
+                QTableWidgetItem(('★ ' if master else '') + r['title']),
                 QTableWidgetItem(str(r['year'])),
                 QTableWidgetItem(r['label']),
                 QTableWidgetItem(r['format']),
                 QTableWidgetItem(r['country']),
             ]
-            for item in items:
-                if is_master:
-                    item.setFont(bold_font)
+            for col, item in enumerate(items, 1):
+                if master:
+                    item.setFont(bold)
                     item.setForeground(QColor('#f9e2af'))
-                self.results_table.setItem(i, items.index(item), item)
-        self.status_label.setText(f"{len(results)} Ergebnis(se) gefunden")
+                self.results_table.setItem(i, col, item)
+        self.status_label.setText(f"{len(results)} Ergebnis(se) — Doppelklick oder 'Lade Album!'")
         if results:
             self.results_table.selectRow(0)
 
@@ -740,12 +1046,64 @@ class DiscogsDialog(QDialog):
         rows = self.results_table.selectionModel().selectedRows()
         if not rows:
             return
+        self.load_btn.setEnabled(True)
         idx = rows[0].row()
-        if idx >= len(self._results if hasattr(self, '_results') else []):
+        if idx >= len(self._results):
+            return
+        # If already cached, show immediately
+        if idx in self._detail_cache:
+            self._show_detail_info(self._detail_cache[idx])
             return
         result = self._results[idx]
-        self.status_label.setText("Lade Details...")
-        self.apply_btn.setEnabled(False)
+        self.status_label.setText("Lade Details…")
+        self._preview_thread = DiscogsDetailThread(
+            result['resource_url'], result['cover_url'], self.discogs_token
+        )
+        self._preview_thread.detail_ready.connect(lambda d, i=idx: self._on_preview_detail(i, d))
+        self._preview_thread.error.connect(lambda e: self.status_label.setText(f"Fehler: {e}"))
+        self._preview_thread.start()
+
+    def _on_preview_detail(self, idx, detail):
+        self._detail_cache[idx] = detail
+        # Update cover indicator
+        if detail.get('cover_data'):
+            item = self.results_table.item(idx, 0)
+            if item:
+                item.setText('🖼')
+                item.setForeground(QColor('#89b4fa'))
+        self._show_detail_info(detail)
+
+    def _show_detail_info(self, detail):
+        tracks = detail.get('tracklist', [])
+        total_secs = 0
+        for t in tracks:
+            dur = t.get('duration', '')
+            if ':' in dur:
+                p = dur.split(':')
+                try:
+                    total_secs += int(p[0])*60+int(p[1]) if len(p)==2 else int(p[0])*3600+int(p[1])*60+int(p[2])
+                except ValueError:
+                    pass
+        dur_str = format_duration(total_secs) if total_secs else '–'
+        cover_str = '🖼 Cover' if detail.get('cover_data') else '∅ Kein Cover'
+        self.status_label.setText(
+            f"{len(tracks)} Tracks  ·  {dur_str}  ·  {cover_str}"
+        )
+
+    def _load_album(self):
+        rows = self.results_table.selectionModel().selectedRows()
+        if not rows or not self._results:
+            return
+        idx = rows[0].row()
+        if idx >= len(self._results):
+            return
+        # Use cached detail if available (already loaded on single-click)
+        if idx in self._detail_cache:
+            self._on_detail(self._detail_cache[idx])
+            return
+        result = self._results[idx]
+        self.load_btn.setEnabled(False)
+        self.status_label.setText("Lade Details und Cover…")
         self._detail_thread = DiscogsDetailThread(
             result['resource_url'], result['cover_url'], self.discogs_token
         )
@@ -754,106 +1112,37 @@ class DiscogsDialog(QDialog):
         self._detail_thread.start()
 
     def _on_detail(self, detail):
-        self.current_detail = detail
-        self.detail_artist.setText(detail['artist'])
-        self.detail_album.setText(detail['album'])
-        self.detail_year.setText(detail['year'])
-        self.detail_genre.setText(detail['genre'] or detail['style'])
-        self.detail_label.setText(detail['label'])
-
-        # Tracklist
+        self.load_btn.setEnabled(True)
         tracks = detail['tracklist']
-        self.tracklist_widget.setRowCount(len(tracks))
-        for i, t in enumerate(tracks):
-            self.tracklist_widget.setItem(i, 0, QTableWidgetItem(t['position']))
-            self.tracklist_widget.setItem(i, 1, QTableWidgetItem(t['title']))
-            self.tracklist_widget.setItem(i, 2, QTableWidgetItem(t['duration']))
-
-        # Cover
-        self.cover_data = None
-        if detail['cover_data']:
-            try:
-                img_data = detail['cover_data']
-                pix = image_data_to_pixmap(img_data, 200)
-                if pix:
-                    self.cover_label.setPixmap(pix)
-                    self.cover_label.setText("")
-                    orig_img = Image.open(BytesIO(img_data))
-                    self.cover_size_label.setText(
-                        f"Cover: {orig_img.width}×{orig_img.height} px"
-                    )
-                    self.cover_data = img_data
-                else:
-                    self.cover_label.setText("Cover Fehler")
-            except Exception:
-                self.cover_label.setText("Cover Fehler")
-        else:
-            self.cover_label.setText("Kein Cover")
-            self.cover_label.setPixmap(QPixmap())
-            self.cover_size_label.setText("")
-
-        self.apply_btn.setEnabled(True)
-        # Calculate total duration from tracklist
         total_secs = 0
         for t in tracks:
             dur = t.get('duration', '')
-            if dur and ':' in dur:
-                parts = dur.split(':')
+            if ':' in dur:
+                p = dur.split(':')
                 try:
-                    if len(parts) == 2:
-                        total_secs += int(parts[0]) * 60 + int(parts[1])
-                    elif len(parts) == 3:
-                        total_secs += int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                    total_secs += int(p[0])*60 + int(p[1]) if len(p)==2 else int(p[0])*3600+int(p[1])*60+int(p[2])
                 except ValueError:
                     pass
-        duration_str = format_duration(total_secs) if total_secs else '–'
-        self.status_label.setText(
-            f"Details geladen — {len(tracks)} Tracks — Gesamtzeit: {duration_str}"
+        dur_str = format_duration(total_secs) if total_secs else '–'
+        self.status_label.setText(f"Geladen — {len(tracks)} Tracks — {dur_str}")
+
+        dlg = TrackMatchDialog(
+            self._files, detail,
+            cfg_save=self._cfg_save, cfg_load=self._cfg_load,
+            parent=self.parent()
         )
+        dlg.tags_accepted.connect(self._forward_tags)
+        if dlg.exec():
+            self.accept()
+
+    def _forward_tags(self, result):
+        # bubble up to MainWindow
+        self.parent()._apply_tags_from_trackmatch(result)
 
     def _on_error(self, msg):
         self.search_btn.setEnabled(True)
+        self.load_btn.setEnabled(True)
         self.status_label.setText(f"Fehler: {msg}")
-
-    def _apply_tags(self):
-        # Persist checkbox states
-        if self._cfg_save:
-            self._cfg_save({'discogs_checkboxes': {
-                'artist':      self.cb_artist.isChecked(),
-                'album':       self.cb_album.isChecked(),
-                'year':        self.cb_year.isChecked(),
-                'genre':       self.cb_genre.isChecked(),
-                'label':       self.cb_label.isChecked(),
-                'tracknumber': self.cb_tracknumber.isChecked(),
-                'cover':       self.cb_cover.isChecked(),
-            }})
-
-        tag_data = {}
-        if self.cb_artist.isChecked():
-            tag_data['artist'] = self.detail_artist.text()
-        if self.cb_album.isChecked():
-            tag_data['album'] = self.detail_album.text()
-        if self.cb_year.isChecked():
-            tag_data['year'] = self.detail_year.text()
-        if self.cb_genre.isChecked():
-            tag_data['genre'] = self.detail_genre.text()
-        if self.cb_label.isChecked():
-            tag_data['label'] = self.detail_label.text()
-        if self.cb_tracknumber.isChecked():
-            tag_data['use_tracknumber'] = True
-            tag_data['tracklist'] = (
-                self.current_detail['tracklist'] if self.current_detail else []
-            )
-
-        cover_bytes = b''
-        if self.cb_cover.isChecked() and self.cover_data:
-            try:
-                cover_bytes = resize_cover(self.cover_data, 600)
-            except Exception as e:
-                print(f"Cover resize error: {e}")
-
-        self.tags_accepted.emit(tag_data, cover_bytes)
-        self.accept()
 
 
 class RenameDialog(QDialog):
@@ -960,14 +1249,15 @@ class RenameDialog(QDialog):
         result = result.replace('%6', track)
         result = result.replace('%t', format_duration(tags.get('duration', 0)))
         result = result.replace('%b', str(tags.get('bitrate', 0)))
-        # Clean illegal chars (except path separator)
+        # Clean illegal chars per path segment, preserve drive letter (X:\)
         parts = result.split('\\')
-        clean_parts = []
-        for p in parts:
-            p = re.sub(r'[<>:"/|?*]', '', p).strip()
-            clean_parts.append(p)
-        result = '\\'.join(clean_parts)
-        return result
+        clean = []
+        for i, p in enumerate(parts):
+            if i == 0 and len(p) == 2 and p[1] == ':':
+                clean.append(p)  # drive letter — keep as-is
+            else:
+                clean.append(re.sub(r'[<>:"/|?*]', '', p).strip())
+        return '\\'.join(clean)
 
     def _apply_case(self, s):
         case = self.case_combo.currentIndex()
@@ -979,24 +1269,32 @@ class RenameDialog(QDialog):
             return s.title()
         return s
 
+    def _resolve_dest(self, path, new_base):
+        """Build destination Path from mask result — supports absolute paths."""
+        if len(new_base) >= 3 and new_base[1] == ':' and new_base[2] == '\\':
+            # Absolute path — use directly
+            dest = Path(new_base + '.mp3')
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        elif '\\' in new_base:
+            sub, fname = new_base.rsplit('\\', 1)
+            dest_dir = Path(path).parent / sub
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / (fname + '.mp3')
+        else:
+            dest = Path(path).parent / (new_base + '.mp3')
+        return dest
+
     def _update_preview(self):
         mask = self.mask_input.currentText()
         self.preview_table.setRowCount(len(self.files))
-        self._new_names = []
         for i, (path, tags) in enumerate(self.files):
             old_name = Path(path).name
-            new_base = self._apply_mask(mask, tags)
-            new_base = self._apply_case(new_base)
-            # Handle sub-folders in mask
-            if '\\' in new_base:
-                parts = new_base.rsplit('\\', 1)
-                new_name = parts[-1] + '.mp3'
-            else:
-                new_name = new_base + '.mp3'
-            self._new_names.append((path, new_base, new_name))
+            new_base = self._apply_case(self._apply_mask(mask, tags))
+            dest = self._resolve_dest(path, new_base)
+            new_display = str(dest) if dest.is_absolute() else dest.name
             self.preview_table.setItem(i, 0, QTableWidgetItem(old_name))
-            color = '#a6e3a1' if old_name != new_name else '#6c7086'
-            item = QTableWidgetItem(new_name)
+            color = '#a6e3a1' if Path(path) != dest else '#6c7086'
+            item = QTableWidgetItem(new_display)
             item.setForeground(QColor(color))
             self.preview_table.setItem(i, 1, item)
 
@@ -1004,26 +1302,34 @@ class RenameDialog(QDialog):
         mask = self.mask_input.currentText()
         errors = []
         renamed = 0
+        moved_folders = set()  # track (src_dir, dest_dir) to copy folder.jpg once per folder pair
+
         for path, tags in self.files:
-            new_base = self._apply_mask(mask, tags)
-            new_base = self._apply_case(new_base)
+            new_base = self._apply_case(self._apply_mask(mask, tags))
             src = Path(path)
-            if '\\' in new_base:
-                sub, fname = new_base.rsplit('\\', 1)
-                dest_dir = src.parent / sub
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                dest = dest_dir / (fname + '.mp3')
-            else:
-                dest = src.parent / (new_base + '.mp3')
+            dest = self._resolve_dest(path, new_base)
             if src == dest:
                 continue
             try:
                 src.rename(dest)
                 renamed += 1
+                moved_folders.add((src.parent, dest.parent))
             except Exception as e:
                 errors.append(f"{src.name}: {e}")
 
-        msg = f"{renamed} Datei(en) umbenannt."
+        # Copy folder.jpg to each new destination folder
+        import shutil
+        for src_dir, dest_dir in moved_folders:
+            if src_dir == dest_dir:
+                continue
+            folder_jpg = src_dir / 'folder.jpg'
+            if folder_jpg.exists():
+                try:
+                    shutil.copy2(folder_jpg, dest_dir / 'folder.jpg')
+                except Exception as e:
+                    errors.append(f"folder.jpg → {dest_dir.name}: {e}")
+
+        msg = f"{renamed} Datei(en) umbenannt/verschoben."
         if errors:
             msg += "\n\nFehler:\n" + "\n".join(errors)
         QMessageBox.information(self, "Umbenennen", msg)
@@ -1601,14 +1907,35 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         dlg = DiscogsDialog(
-            self._get_prefill(), len(selected),
+            self._get_prefill(), selected,
             self._discogs_token,
             cfg_save=self._save_config,
             cfg_load=self._load_config,
             parent=self
         )
-        dlg.tags_accepted.connect(self._apply_tags_to_selected)
         dlg.exec()
+
+    def _apply_tags_from_trackmatch(self, result):
+        """Handle [(path, tag_dict, cover_bytes), ...] from TrackMatchDialog."""
+        errors = []
+        cover_written = False
+        for path, tag_data, cover_bytes in result:
+            cover = cover_bytes if cover_bytes else None
+            ok = write_mp3_tags(path, tag_data, cover)
+            if not ok:
+                errors.append(path)
+            if cover and not cover_written and self._current_folder:
+                try:
+                    (Path(self._current_folder) / 'folder.jpg').write_bytes(cover)
+                    cover_written = True
+                except Exception as e:
+                    errors.append(f"folder.jpg: {e}")
+        if self._current_folder:
+            self._load_folder(self._current_folder)
+        msg = f"{len(result)} Datei(en) getaggt."
+        if errors:
+            msg += f"  {len(errors)} Fehler."
+        self.status_bar.showMessage(msg)
 
     def _apply_tags_to_selected(self, tag_data, cover_bytes):
         selected = self._get_selected_files()
