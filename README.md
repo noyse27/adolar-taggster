@@ -4,6 +4,7 @@
 
 A modern MP3 tagger with Discogs integration — built as a replacement for Tag&Rename, fixing its UTF-8/special character encoding bug when fetching metadata from Discogs.
 
+![Version](https://img.shields.io/badge/version-1.1-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt6](https://img.shields.io/badge/PyQt6-6.6%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -120,6 +121,11 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 - Pillow >= 10.0
 
 ## Changelog
+
+### v1.1
+- Quick rename button (⚡) — applies last saved mask instantly without dialog; tooltip shows current mask
+- Auto-numbering button (#) — writes sequential track numbers to selected files with smart zero-padding
+- About dialog (Über menu) with version, copyright, website and contact links
 
 ### v0.4
 - Compilation auto-detection via Discogs per-track artist API field
