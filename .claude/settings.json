@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(pyinstaller *)",
+      "Bash(python tagger.py*)",
+      "Bash(python -c *)"
+    ]
+  }
+}
