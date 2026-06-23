@@ -1963,6 +1963,15 @@ class MainWindow(QMainWindow):
         self.quick_rename_btn.clicked.connect(self._quick_rename)
         self._update_quick_rename_tooltip()
 
+        self.autonumber_btn = QPushButton("# Nummerierung")
+        self.autonumber_btn.setEnabled(False)
+        self.autonumber_btn.setToolTip(
+            "Schreibt Track-Nummern (1, 2, 3…) in die Tags der markierten Dateien\n"
+            "in der Reihenfolge wie sie in der Liste erscheinen"
+        )
+        self.autonumber_btn.setStyleSheet(secondary_ss)
+        self.autonumber_btn.clicked.connect(self._autonumber_tracks)
+
         self.select_all_btn = QPushButton("Alle")
         self.select_all_btn.setStyleSheet(secondary_ss)
         self.select_all_btn.clicked.connect(self._select_all)
@@ -1989,6 +1998,7 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.discogs_btn)
         toolbar_layout.addWidget(self.rename_btn)
         toolbar_layout.addWidget(self.quick_rename_btn)
+        toolbar_layout.addWidget(self.autonumber_btn)
         toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(self.select_all_btn)
         toolbar_layout.addWidget(self.deselect_btn)
@@ -2151,21 +2161,6 @@ class MainWindow(QMainWindow):
         self.cover_info_label.setStyleSheet("color: #6c7086; font-size: 10px;")
         self.cover_info_label.setFixedHeight(14)
         tree_layout.addWidget(self.cover_info_label)
-
-        self.autonumber_btn = QPushButton("# Nummerierung")
-        self.autonumber_btn.setEnabled(False)
-        self.autonumber_btn.setToolTip(
-            "Schreibt Track-Nummern (1, 2, 3…) in die Tags der markierten Dateien\n"
-            "in der Reihenfolge wie sie in der Liste erscheinen"
-        )
-        self.autonumber_btn.setStyleSheet("""
-            QPushButton { background:transparent; color:#a6adc8; border:1px solid #313244;
-                          border-radius:5px; padding:3px 8px; font-size:11px; }
-            QPushButton:hover { background:#1e1e2e; color:#cdd6f4; border-color:#585b70; }
-            QPushButton:disabled { color:#45475a; border-color:#1e1e2e; }
-        """)
-        self.autonumber_btn.clicked.connect(self._autonumber_tracks)
-        tree_layout.addWidget(self.autonumber_btn)
 
         splitter.addWidget(tree_widget)
 
