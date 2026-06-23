@@ -1911,6 +1911,11 @@ class MainWindow(QMainWindow):
         clear_folder_action.triggered.connect(self._clear_last_folder)
         tools_menu.addAction(clear_folder_action)
 
+        about_menu = menubar.addMenu("Über")
+        about_action = QAction("Über TagMeGently", self)
+        about_action.triggered.connect(self._open_about)
+        about_menu.addAction(about_action)
+
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -1951,6 +1956,13 @@ class MainWindow(QMainWindow):
         self.rename_btn.setStyleSheet(secondary_ss)
         self.rename_btn.clicked.connect(self._open_rename)
 
+        self.quick_rename_btn = QPushButton("⚡")
+        self.quick_rename_btn.setEnabled(False)
+        self.quick_rename_btn.setFixedWidth(30)
+        self.quick_rename_btn.setStyleSheet(secondary_ss)
+        self.quick_rename_btn.clicked.connect(self._quick_rename)
+        self._update_quick_rename_tooltip()
+
         self.select_all_btn = QPushButton("Alle")
         self.select_all_btn.setStyleSheet(secondary_ss)
         self.select_all_btn.clicked.connect(self._select_all)
@@ -1976,6 +1988,7 @@ class MainWindow(QMainWindow):
 
         toolbar_layout.addWidget(self.discogs_btn)
         toolbar_layout.addWidget(self.rename_btn)
+        toolbar_layout.addWidget(self.quick_rename_btn)
         toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(self.select_all_btn)
         toolbar_layout.addWidget(self.deselect_btn)
@@ -2139,6 +2152,21 @@ class MainWindow(QMainWindow):
         self.cover_info_label.setFixedHeight(14)
         tree_layout.addWidget(self.cover_info_label)
 
+        self.autonumber_btn = QPushButton("# Nummerierung")
+        self.autonumber_btn.setEnabled(False)
+        self.autonumber_btn.setToolTip(
+            "Schreibt Track-Nummern (1, 2, 3…) in die Tags der markierten Dateien\n"
+            "in der Reihenfolge wie sie in der Liste erscheinen"
+        )
+        self.autonumber_btn.setStyleSheet("""
+            QPushButton { background:transparent; color:#a6adc8; border:1px solid #313244;
+                          border-radius:5px; padding:3px 8px; font-size:11px; }
+            QPushButton:hover { background:#1e1e2e; color:#cdd6f4; border-color:#585b70; }
+            QPushButton:disabled { color:#45475a; border-color:#1e1e2e; }
+        """)
+        self.autonumber_btn.clicked.connect(self._autonumber_tracks)
+        tree_layout.addWidget(self.autonumber_btn)
+
         splitter.addWidget(tree_widget)
 
         # Right: file table
@@ -2222,6 +2250,8 @@ class MainWindow(QMainWindow):
         self.folder_label.setText(path)
         self.discogs_btn.setEnabled(False)
         self.rename_btn.setEnabled(False)
+        self.quick_rename_btn.setEnabled(False)
+        self.autonumber_btn.setEnabled(False)
 
         # Each scan gets a unique ID — stale results from old scans are dropped
         self._scan_id = getattr(self, '_scan_id', 0) + 1
@@ -2313,6 +2343,8 @@ class MainWindow(QMainWindow):
         has_sel = selected > 0
         self.discogs_btn.setEnabled(has_sel)
         self.rename_btn.setEnabled(has_sel)
+        self.quick_rename_btn.setEnabled(has_sel)
+        self.autonumber_btn.setEnabled(has_sel)
         if self._files:
             self.status_bar.showMessage(
                 f"{selected} von {len(self._files)} Datei(en) markiert  —  {self._current_folder}"
@@ -2544,6 +2576,99 @@ class MainWindow(QMainWindow):
             return
         dlg = CoverScanDialog(scan_root, parent=self)
         dlg.load_folder.connect(self._load_folder)
+        dlg.exec()
+
+    def _update_quick_rename_tooltip(self):
+        mask = self._load_config().get('last_rename_mask', '')
+        if not mask:
+            masks = self._load_masks()
+            mask = masks[0] if masks else ''
+        self.quick_rename_btn.setToolTip(f"Schnell-Umbenennen\nMaske: {mask}")
+
+    def _quick_rename(self):
+        """Rename selected files using the last saved mask without opening a dialog."""
+        selected = self._get_selected_files()
+        if not selected:
+            return
+        mask = self._load_config().get('last_rename_mask', '')
+        if not mask:
+            masks = self._load_masks()
+            mask = masks[0] if masks else '%6-%2'
+        # Reload fresh tags and build a temporary RenameDialog to reuse its logic
+        fresh = [(p, load_mp3_tags(p)) for p, _ in selected]
+        dlg = RenameDialog(fresh, masks=self._load_masks(),
+                           last_mask=mask, parent=self)
+        dlg.mask_input.setCurrentText(mask)
+        dlg._do_rename()  # runs rename and calls self.accept()
+
+    def _autonumber_tracks(self):
+        """Write sequential track numbers into tags of selected files."""
+        selected = self._get_selected_files()
+        if not selected:
+            return
+        total = len(selected)
+        if total < 10:
+            width = 1
+        elif total < 100:
+            width = 2
+        else:
+            width = 3
+        errors = []
+        for i, (path, _) in enumerate(selected, 1):
+            nr = str(i).zfill(width)
+            ok = write_mp3_tags(path, {'tracknumber': f"{nr}/{total}"})
+            if not ok:
+                errors.append(path)
+        if self._current_folder:
+            self._load_folder(self._current_folder)
+        msg = f"# {total} Dateien nummeriert (1–{total}, {width}-stellig)."
+        if errors:
+            msg += f"  {len(errors)} Fehler."
+        self.status_bar.showMessage(msg)
+
+    def _open_about(self):
+        import webbrowser
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Über TagMeGently")
+        dlg.setFixedSize(340, 260)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(10)
+        layout.setContentsMargins(30, 30, 30, 30)
+
+        title = QLabel("TagMeGently")
+        title.setStyleSheet("font-size: 20px; font-weight: 700; color: #89b4fa;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        for text, style in [
+            ("Version: 0.4.1", "color: #a6adc8; font-size: 12px;"),
+            ("© PolzeSoft 2026", "color: #6c7086; font-size: 12px;"),
+        ]:
+            lbl = QLabel(text)
+            lbl.setStyleSheet(style)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(lbl)
+
+        layout.addSpacing(6)
+
+        web_btn = QPushButton("https://polze.net")
+        web_btn.setStyleSheet("QPushButton { background:transparent; color:#89b4fa; border:none; font-size:12px; text-decoration:underline; } QPushButton:hover { color:#b4d0ff; }")
+        web_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        web_btn.clicked.connect(lambda: webbrowser.open("https://polze.net"))
+        web_btn.setAlignment = lambda *a: None  # suppress warning
+        layout.addWidget(web_btn)
+
+        mail_btn = QPushButton("tagmegently@polze.net")
+        mail_btn.setStyleSheet("QPushButton { background:transparent; color:#89b4fa; border:none; font-size:12px; text-decoration:underline; } QPushButton:hover { color:#b4d0ff; }")
+        mail_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        mail_btn.clicked.connect(lambda: webbrowser.open("mailto:tagmegently@polze.net"))
+        layout.addWidget(mail_btn)
+
+        layout.addStretch()
+        close_btn = QPushButton("Schließen")
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn)
+
         dlg.exec()
 
     def _open_settings(self):
