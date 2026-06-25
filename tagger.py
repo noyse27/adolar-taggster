@@ -317,6 +317,12 @@ def load_mp3_tags(path):
             tags['year'] = str(id3.get('TDRC', ''))
             tags['genre'] = str(id3.get('TCON', ''))
             tags['tracknumber'] = str(id3.get('TRCK', ''))
+            tags['bpm'] = str(id3.get('TBPM', ''))
+            tags['album_artist'] = str(id3.get('TPE2', ''))
+            tags['comment'] = str(id3.get('COMM::eng', '') or id3.get('COMM::deu', '') or
+                                   next((str(id3[k]) for k in id3.keys() if k.startswith('COMM')), ''))
+            tags['label'] = str(id3.get('TPUB', ''))
+            tags['discnumber'] = str(id3.get('TPOS', ''))
             for key in id3.keys():
                 if key.startswith('APIC'):
                     tags['cover'] = id3[key].data
@@ -1801,6 +1807,53 @@ class FolderTreeWidget(QTreeWidget):
             pass
 
 
+class BpmCalculationThread(QThread):
+    progress = pyqtSignal(int, int, str)   # done, total, filename
+    finished = pyqtSignal(int, int)        # written, skipped
+
+    def __init__(self, files):
+        super().__init__()
+        self.files = files  # [(path, tags), ...]
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        written = 0
+        skipped = 0
+        total = len(self.files)
+        for i, (path, tags) in enumerate(self.files):
+            if self._cancel:
+                return
+            fname = Path(path).name
+            self.progress.emit(i, total, fname)
+            # Skip if BPM already set
+            existing = tags.get('bpm', '')
+            if existing and existing != '0':
+                skipped += 1
+                continue
+            try:
+                import librosa, numpy as np
+                # Load max 60s — enough for reliable BPM, much faster than full file
+                y, sr = librosa.load(path, sr=22050, mono=True, duration=60)
+                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+                # librosa 0.10+ returns ndarray — extract scalar safely
+                bpm = int(round(float(np.atleast_1d(tempo)[0])))
+                if bpm > 0:
+                    try:
+                        id3 = ID3(path)
+                    except Exception:
+                        id3 = ID3()
+                    from mutagen.id3 import TBPM
+                    id3['TBPM'] = TBPM(encoding=3, text=str(bpm))
+                    id3.save(path, v2_version=3)
+                    written += 1
+            except Exception as e:
+                print(f"BPM error {fname}: {e}")
+        self.finished.emit(written, skipped)
+
+
 class FolderScanThread(QThread):
     progress = pyqtSignal(int, str)   # count, current filename
     scan_done = pyqtSignal(object)    # [(path, tags), ...] — object avoids list copy overhead
@@ -1972,6 +2025,12 @@ class MainWindow(QMainWindow):
         self.autonumber_btn.setStyleSheet(secondary_ss)
         self.autonumber_btn.clicked.connect(self._autonumber_tracks)
 
+        self.bpm_btn = QPushButton("♩ BPM")
+        self.bpm_btn.setEnabled(False)
+        self.bpm_btn.setToolTip("Berechnet BPM für markierte MP3s und schreibt sie in den Tag\n(überspringt Dateien mit vorhandenem BPM-Tag)")
+        self.bpm_btn.setStyleSheet(secondary_ss)
+        self.bpm_btn.clicked.connect(self._calculate_bpm)
+
         self.select_all_btn = QPushButton("Alle")
         self.select_all_btn.setStyleSheet(secondary_ss)
         self.select_all_btn.clicked.connect(self._select_all)
@@ -1999,6 +2058,7 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.rename_btn)
         toolbar_layout.addWidget(self.quick_rename_btn)
         toolbar_layout.addWidget(self.autonumber_btn)
+        toolbar_layout.addWidget(self.bpm_btn)
         toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(self.select_all_btn)
         toolbar_layout.addWidget(self.deselect_btn)
@@ -2174,18 +2234,56 @@ class MainWindow(QMainWindow):
         files_label.setObjectName("heading")
         files_layout.addWidget(files_label)
 
-        # 9 columns: Cover, Track, Dateiname, Künstler, Album, Titel, Jahr, Genre, Dauer
-        # path stored in col 2 (Dateiname) via UserRole
-        self.file_table = QTableWidget(0, 9)
-        self.file_table.setHorizontalHeaderLabels([
-            "🖼", "Track", "Dateiname", "Künstler", "Album", "Titel", "Jahr", "Genre", "Dauer"
-        ])
+        # Column definitions: (header, tag_key, default_visible, resizeMode)
+        # Col 2 (Dateiname) stores full path in UserRole
+        self.COLUMNS = [
+            ("🖼",          'cover_flag',   True,  'fixed'),
+            ("Track",       'tracknumber',  True,  'contents'),
+            ("Dateiname",   'filename',     True,  'stretch'),
+            ("Künstler",    'artist',       True,  'contents'),
+            ("Album",       'album',        True,  'stretch'),
+            ("Titel",       'title',        True,  'stretch'),
+            ("Jahr",        'year',         True,  'contents'),
+            ("Genre",       'genre',        True,  'contents'),
+            ("Dauer",       'duration',     True,  'contents'),
+            ("Album Artist",'album_artist', True,  'contents'),
+            ("BPM",         'bpm',          True,  'contents'),
+            ("Bitrate",     'bitrate',      False, 'contents'),
+            ("Kommentar",   'comment',      False, 'stretch'),
+            ("Label",       'label',        False, 'contents'),
+            ("Disc#",       'discnumber',   False, 'contents'),
+        ]
+        # Load saved visibility
+        saved_vis = self._load_config().get('column_visibility', {})
+        self._col_visible = {}
+        for i, (hdr, key, default, _) in enumerate(self.COLUMNS):
+            self._col_visible[i] = saved_vis.get(str(i), default)
+
+        self.file_table = QTableWidget(0, len(self.COLUMNS))
+        self.file_table.setHorizontalHeaderLabels([c[0] for c in self.COLUMNS])
         hh = self.file_table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.file_table.setColumnWidth(0, 28)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        for i, (_, _, _, mode) in enumerate(self.COLUMNS):
+            if mode == 'fixed':
+                hh.setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
+                self.file_table.setColumnWidth(i, 28)
+            elif mode == 'stretch':
+                hh.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
+            else:
+                hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+            if not self._col_visible[i]:
+                self.file_table.setColumnHidden(i, True)
+        # Right-click header for column visibility; drag to reorder
+        hh.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        hh.customContextMenuRequested.connect(self._show_column_menu)
+        hh.setSectionsMovable(True)
+        hh.sectionMoved.connect(self._save_column_order)
+        # Restore saved column order
+        saved_order = self._load_config().get('column_order', [])
+        if len(saved_order) == len(self.COLUMNS):
+            for visual_idx, logical_idx in enumerate(saved_order):
+                current_visual = hh.visualIndex(logical_idx)
+                if current_visual != visual_idx:
+                    hh.moveSection(current_visual, visual_idx)
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.file_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.file_table.setSortingEnabled(True)
@@ -2247,6 +2345,7 @@ class MainWindow(QMainWindow):
         self.rename_btn.setEnabled(False)
         self.quick_rename_btn.setEnabled(False)
         self.autonumber_btn.setEnabled(False)
+        self.bpm_btn.setEnabled(False)
 
         # Each scan gets a unique ID — stale results from old scans are dropped
         self._scan_id = getattr(self, '_scan_id', 0) + 1
@@ -2297,26 +2396,35 @@ class MainWindow(QMainWindow):
             mp3_path = Path(path_str)
             self._files.append((path_str, tags))
 
-            has_cover = tags['cover'] is not None
-            cover_item = QTableWidgetItem('♪' if has_cover else '')
-            cover_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Col 0: cover indicator
+            has_cover = tags.get('cover') is not None
+            ci = QTableWidgetItem('♪' if has_cover else '')
+            ci.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if has_cover:
-                cover_item.setForeground(QColor('#a6e3a1'))
-            self.file_table.setItem(i, 0, cover_item)
+                ci.setForeground(QColor('#a6e3a1'))
+            self.file_table.setItem(i, 0, ci)
 
-            track = tags['tracknumber'].split('/')[0]
+            # Col 1: track
+            track = tags.get('tracknumber', '').split('/')[0]
             self.file_table.setItem(i, 1, QTableWidgetItem(track.zfill(2) if track else ''))
 
-            fname_item = QTableWidgetItem(mp3_path.name)
-            fname_item.setData(Qt.ItemDataRole.UserRole, path_str)
-            self.file_table.setItem(i, 2, fname_item)
+            # Col 2: filename + path in UserRole
+            fi = QTableWidgetItem(mp3_path.name)
+            fi.setData(Qt.ItemDataRole.UserRole, path_str)
+            self.file_table.setItem(i, 2, fi)
 
-            self.file_table.setItem(i, 3, QTableWidgetItem(tags['artist']))
-            self.file_table.setItem(i, 4, QTableWidgetItem(tags['album']))
-            self.file_table.setItem(i, 5, QTableWidgetItem(tags['title']))
-            self.file_table.setItem(i, 6, QTableWidgetItem(tags['year']))
-            self.file_table.setItem(i, 7, QTableWidgetItem(tags['genre']))
-            self.file_table.setItem(i, 8, QTableWidgetItem(format_duration(tags['duration'])))
+            self.file_table.setItem(i, 3, QTableWidgetItem(tags.get('artist', '')))
+            self.file_table.setItem(i, 4, QTableWidgetItem(tags.get('album', '')))
+            self.file_table.setItem(i, 5, QTableWidgetItem(tags.get('title', '')))
+            self.file_table.setItem(i, 6, QTableWidgetItem(tags.get('year', '')))
+            self.file_table.setItem(i, 7, QTableWidgetItem(tags.get('genre', '')))
+            self.file_table.setItem(i, 8, QTableWidgetItem(format_duration(tags.get('duration', 0))))
+            self.file_table.setItem(i, 9, QTableWidgetItem(tags.get('album_artist', '')))
+            self.file_table.setItem(i, 10, QTableWidgetItem(tags.get('bpm', '')))
+            self.file_table.setItem(i, 11, QTableWidgetItem(str(tags.get('bitrate', ''))))
+            self.file_table.setItem(i, 12, QTableWidgetItem(tags.get('comment', '')))
+            self.file_table.setItem(i, 13, QTableWidgetItem(tags.get('label', '')))
+            self.file_table.setItem(i, 14, QTableWidgetItem(tags.get('discnumber', '')))
 
         self.file_table.setSortingEnabled(True)
         self._select_all()
@@ -2340,6 +2448,7 @@ class MainWindow(QMainWindow):
         self.rename_btn.setEnabled(has_sel)
         self.quick_rename_btn.setEnabled(has_sel)
         self.autonumber_btn.setEnabled(has_sel)
+        self.bpm_btn.setEnabled(has_sel)
         if self._files:
             self.status_bar.showMessage(
                 f"{selected} von {len(self._files)} Datei(en) markiert  —  {self._current_folder}"
@@ -2620,6 +2729,52 @@ class MainWindow(QMainWindow):
         if errors:
             msg += f"  {len(errors)} Fehler."
         self.status_bar.showMessage(msg)
+
+    def _save_column_order(self):
+        hh = self.file_table.horizontalHeader()
+        order = [hh.logicalIndex(v) for v in range(hh.count())]
+        self._save_config({'column_order': order})
+
+    def _show_column_menu(self, pos):
+        menu = QMenu(self)
+        # Only allow toggling columns 3+ (first 3 are always visible)
+        for i, (hdr, _, _, _) in enumerate(self.COLUMNS):
+            if i < 3:
+                continue
+            action = menu.addAction(hdr)
+            action.setCheckable(True)
+            action.setChecked(self._col_visible.get(i, True))
+            action.setData(i)
+        chosen = menu.exec(self.file_table.horizontalHeader().mapToGlobal(pos))
+        if chosen:
+            col = chosen.data()
+            visible = chosen.isChecked()
+            self._col_visible[col] = visible
+            self.file_table.setColumnHidden(col, not visible)
+            # Persist
+            self._save_config({'column_visibility': {str(k): v for k, v in self._col_visible.items()}})
+
+    def _calculate_bpm(self):
+        selected = self._get_selected_files()
+        if not selected:
+            return
+        self.bpm_btn.setEnabled(False)
+        self.status_bar.showMessage(f"Berechne BPM für {len(selected)} Datei(en)…")
+        self._bpm_thread = BpmCalculationThread(selected)
+        self._bpm_thread.progress.connect(self._on_bpm_progress)
+        self._bpm_thread.finished.connect(self._on_bpm_done)
+        self._bpm_thread.start()
+
+    def _on_bpm_progress(self, done, total, filename):
+        self.status_bar.showMessage(f"BPM {done+1}/{total}: {filename}")
+
+    def _on_bpm_done(self, written, skipped):
+        self.bpm_btn.setEnabled(True)
+        self.status_bar.showMessage(
+            f"BPM fertig — {written} geschrieben, {skipped} übersprungen (bereits vorhanden)"
+        )
+        if self._current_folder:
+            self._load_folder(self._current_folder)
 
     def _open_about(self):
         import webbrowser
