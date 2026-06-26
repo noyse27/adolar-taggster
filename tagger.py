@@ -2593,14 +2593,15 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "Fehler", str(e))
 
     def _navigate_tree(self, path):
-        """Expand the tree to show path and select it (without scanning)."""
+        """Expand the tree to show path, select it and bring it into view."""
         def do_navigate():
             try:
                 idx = self.fs_model.index(path)
                 if idx.isValid():
                     self.tree_view.setCurrentIndex(idx)
                     self.tree_view.expand(idx)
-                    self.tree_view.scrollTo(idx)
+                    self.tree_view.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
+                    self.tree_view.setFocus()
             except Exception:
                 pass
         QTimer.singleShot(0, do_navigate)
