@@ -2581,7 +2581,7 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.Yes:
                 try:
                     from send2trash import send2trash
-                    send2trash(path)
+                    send2trash(str(Path(path)))
                     # Refresh tree
                     self.fs_model.setRootPath('')
                     self.status_bar.showMessage(f"'{name}' in den Papierkorb verschoben.")
