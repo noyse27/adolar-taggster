@@ -2593,17 +2593,32 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "Fehler", str(e))
 
     def _navigate_tree(self, path):
-        """Expand the tree to show path, select it and bring it into view."""
+        """Expand all parent nodes, select and scroll to path."""
         def do_navigate():
             try:
+                p = Path(path)
+                # Expand every ancestor so the target becomes visible
+                current = Path(p.parts[0])
+                for part in p.parts[1:]:
+                    current = current / part
+                    idx = self.fs_model.index(str(current))
+                    if idx.isValid():
+                        self.tree_view.expand(idx)
+                # Select and scroll
                 idx = self.fs_model.index(path)
                 if idx.isValid():
                     self.tree_view.setCurrentIndex(idx)
-                    self.tree_view.expand(idx)
-                    self.tree_view.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
                     self.tree_view.setFocus()
+                    QTimer.singleShot(100, _scroll)
             except Exception:
                 pass
+
+        def _scroll():
+            idx = self.fs_model.index(path)
+            if idx.isValid():
+                self.tree_view.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
+                self.tree_view.setFocus()
+
         QTimer.singleShot(0, do_navigate)
 
     def _on_folder_clicked(self, index):
