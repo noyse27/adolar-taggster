@@ -2156,9 +2156,6 @@ class MainWindow(QMainWindow):
         settings_action = QAction("Einstellungen (Discogs Token)", self)
         settings_action.triggered.connect(self._open_settings)
         tools_menu.addAction(settings_action)
-        clear_folder_action = QAction("Letzten Ordner vergessen", self)
-        clear_folder_action.triggered.connect(self._clear_last_folder)
-        tools_menu.addAction(clear_folder_action)
 
         about_menu = menubar.addMenu("Über")
         about_action = QAction("Über TagMeGently", self)
