@@ -134,7 +134,16 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### v1.3
+### v1.3 (current)
+- Tag editor: double-click or right-click → single-file editor or batch editor with `<beibehalten>` fields
+- Discogs: artist disambiguation numbers stripped, comments loaded, files sorted by track tag
+- Explorer: right-click folder → add/remove favorites (⭐), delete to recycle bin
+- Favorites shown in quick-access panel above tree
+- Tree navigation: expands all parents and scrolls to selected folder
+- Table columns: interactive resize, horizontal scrollbar
+- Selection preserved after all tag operations
+
+### v1.3 (previous)
 - **Tag editor** — double-click or right-click any file → edit all tags in a dedicated dialog
 - **Batch tag editor** — select multiple files, right-click → fields default to `<beibehalten>` (keep), confirmation before writing
 - Discogs artist names: disambiguation numbers stripped automatically (`Artist (2)` → `Artist`)

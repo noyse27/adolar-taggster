@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TagMeGently – Hilfe</title>
+<style>
+  :root {
+    --bg:       #11111b;
+    --surface:  #1e1e2e;
+    --surface2: #24273a;
+    --border:   #313244;
+    --text:     #cdd6f4;
+    --subtle:   #a6adc8;
+    --muted:    #6c7086;
+    --blue:     #89b4fa;
+    --green:    #a6e3a1;
+    --yellow:   #f9e2af;
+    --red:      #f38ba8;
+    --purple:   #cba6f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  /* ── Layout ── */
+  .layout { display: flex; min-height: 100vh; }
+
+  nav {
+    width: 260px;
+    min-width: 260px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 24px 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  nav .logo {
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  nav .logo h1 { font-size: 18px; color: var(--blue); font-weight: 700; }
+  nav .logo p  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  nav a {
+    display: block;
+    padding: 6px 20px;
+    color: var(--subtle);
+    text-decoration: none;
+    font-size: 13px;
+    border-left: 2px solid transparent;
+    transition: all .15s;
+  }
+  nav a:hover { color: var(--text); background: var(--surface2); border-left-color: var(--blue); }
+  nav .nav-section {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--muted);
+    padding: 14px 20px 4px;
+    text-transform: uppercase;
+    letter-spacing: .8px;
+  }
+
+  main {
+    flex: 1;
+    max-width: 860px;
+    padding: 48px 48px 80px;
+  }
+
+  /* ── Typography ── */
+  h1 { font-size: 32px; color: var(--blue); margin-bottom: 8px; }
+  h2 { font-size: 22px; color: var(--text); margin: 48px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 16px; color: var(--blue); margin: 28px 0 10px; }
+  p  { margin-bottom: 12px; color: var(--subtle); }
+  strong { color: var(--text); }
+  a  { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Components ── */
+  .badge {
+    display: inline-block;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-family: monospace;
+    color: var(--yellow);
+  }
+  .key {
+    display: inline-block;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .tip {
+    background: var(--surface2);
+    border-left: 3px solid var(--blue);
+    border-radius: 0 6px 6px 0;
+    padding: 12px 16px;
+    margin: 16px 0;
+    font-size: 14px;
+    color: var(--subtle);
+  }
+  .tip strong { color: var(--blue); }
+  .warn {
+    background: var(--surface2);
+    border-left: 3px solid var(--yellow);
+    border-radius: 0 6px 6px 0;
+    padding: 12px 16px;
+    margin: 16px 0;
+    font-size: 14px;
+    color: var(--subtle);
+  }
+  .warn strong { color: var(--yellow); }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+  th { background: var(--surface2); color: var(--muted); font-weight: 600; padding: 8px 12px; text-align: left; border-bottom: 2px solid var(--border); font-size: 11px; text-transform: uppercase; }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--subtle); }
+  td:first-child { color: var(--yellow); font-family: monospace; white-space: nowrap; }
+  tr:hover td { background: var(--surface2); }
+
+  ul, ol { padding-left: 24px; margin-bottom: 12px; color: var(--subtle); }
+  li { margin-bottom: 5px; }
+  li strong { color: var(--text); }
+
+  .hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 32px;
+    margin-bottom: 32px;
+  }
+  .hero p { margin-bottom: 0; font-size: 16px; }
+
+  .step {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 14px;
+    align-items: flex-start;
+  }
+  .step-num {
+    min-width: 28px;
+    height: 28px;
+    background: var(--blue);
+    color: var(--bg);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .step-body { flex: 1; }
+  .step-body strong { color: var(--text); display: block; margin-bottom: 3px; }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+  footer {
+    padding: 20px 48px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- ── Sidebar ── -->
+<nav>
+  <div class="logo">
+    <h1>TagMeGently</h1>
+    <p>Hilfe &amp; Dokumentation</p>
+  </div>
+  <span class="nav-section">Einstieg</span>
+  <a href="#installation">Installation</a>
+  <a href="#quickstart">Schnellstart</a>
+  <span class="nav-section">Oberfläche</span>
+  <a href="#explorer">Explorer</a>
+  <a href="#dateiliste">Dateiliste</a>
+  <a href="#coverpanel">Cover-Panel</a>
+  <a href="#toolbar">Toolbar</a>
+  <span class="nav-section">Funktionen</span>
+  <a href="#discogs">Discogs-Suche</a>
+  <a href="#trackmatch">TrackMatch-Dialog</a>
+  <a href="#tageditor">Tag-Editor</a>
+  <a href="#umbenennen">Umbenennen</a>
+  <a href="#bpm">BPM-Berechnung</a>
+  <a href="#coverscanner">Cover-Scanner</a>
+  <a href="#nummerierung">Nummerierung</a>
+  <span class="nav-section">Referenz</span>
+  <a href="#masken">Umbenennungsmasken</a>
+  <a href="#spalten">Tabellenspalten</a>
+  <a href="#einstellungen">Einstellungen</a>
+</nav>
+
+<!-- ── Main ── -->
+<main>
+
+<h1>TagMeGently</h1>
+<p style="color:var(--muted); font-size:14px; margin-bottom:24px;">Version 1.3 · © PolzeSoft 2026 · <a href="https://polze.net">polze.net</a> · <a href="mailto:tagmegently@polze.net">tagmegently@polze.net</a></p>
+
+<div class="hero">
+  <p>TagMeGently ist ein moderner MP3-Tagger mit Discogs-Integration für Windows. Tags werden korrekt in UTF-8 geschrieben — Umlaute, kyrillische und sonstige Sonderzeichen bleiben erhalten.</p>
+</div>
+
+<!-- Installation -->
+<h2 id="installation">Installation</h2>
+<h3>EXE (empfohlen)</h3>
+<p>Die <strong>TagMeGently.exe</strong> von der <a href="https://github.com/noyse27/tagmegently/releases">Releases-Seite</a> herunterladen und doppelklicken — keine weitere Installation nötig.</p>
+
+<h3>Aus dem Quellcode</h3>
+<pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:13px;color:var(--green);overflow:auto;">pip install PyQt6 mutagen requests Pillow librosa send2trash
+python tagger.py</pre>
+
+<div class="warn"><strong>Hinweis:</strong> Für die Discogs-Suche empfiehlt sich ein persönlicher API-Token (60 Anfragen/Min statt 25). Token erstellen unter <em>discogs.com → Einstellungen → Entwickler</em>, dann unter <strong>Tools → Einstellungen</strong> eintragen.</div>
+
+<!-- Quickstart -->
+<h2 id="quickstart">Schnellstart</h2>
+<div class="step"><div class="step-num">1</div><div class="step-body"><strong>Ordner öffnen</strong>Im Explorer-Panel links den Künstler-Ordner aufklappen und auf den Album-Ordner doppelklicken. Die MP3s werden im Hintergrund geladen.</div></div>
+<div class="step"><div class="step-num">2</div><div class="step-body"><strong>Discogs-Suche</strong>Auf <em>Discogs</em> klicken. Künstler und Album sind vorausgefüllt. Ein Suchergebnis anklicken lädt Details; <em>Lade Album!</em> öffnet den TrackMatch-Dialog.</div></div>
+<div class="step"><div class="step-num">3</div><div class="step-body"><strong>Tags zuordnen</strong>Im TrackMatch-Dialog Dateinamen und Discogs-Tracks prüfen und bei Bedarf mit ▲/▼ neu ordnen.</div></div>
+<div class="step"><div class="step-num">4</div><div class="step-body"><strong>Schreibe ID-Tags</strong>Klick auf <em>Schreibe ID-Tags</em> schreibt alle Tags, skaliert das Cover auf max. 600×600 px und speichert es als <code>folder.jpg</code>.</div></div>
+<div class="step"><div class="step-num">5</div><div class="step-body"><strong>Umbenennen</strong>Mit <em>✏️ Umbenennen</em> oder dem ⚡-Button Dateien nach einer Maske umbenennen/verschieben.</div></div>
+
+<!-- Explorer -->
+<h2 id="explorer">Explorer</h2>
+<p>Der Explorer-Baum links zeigt Schnellzugriff-Ordner oben und darunter den vollständigen Verzeichnisbaum.</p>
+
+<h3>Navigation</h3>
+<ul>
+  <li><strong>Einfachklick</strong> auf einen Ordner klappt ihn auf oder zu.</li>
+  <li><strong>Doppelklick</strong> auf einen Album-Ordner startet den MP3-Scan (läuft im Hintergrund, UI bleibt reaktionsfähig).</li>
+  <li>Während des Scans erscheint ein <strong>✕ Abbrechen</strong>-Button in der Toolbar.</li>
+</ul>
+
+<h3>Schnellzugriff</h3>
+<p>Oben im Explorer stehen feste Ordner (Musik, Downloads, Desktop, Dokumente, Videos) sowie selbst angelegte <strong>Favoriten (⭐)</strong>. Ein Klick springt direkt zu diesem Ordner im Baum.</p>
+
+<h3>Rechtsklick-Menü</h3>
+<ul>
+  <li><strong>⭐ Zu Favoriten hinzufügen / entfernen</strong> — Favoriten erscheinen sofort im Schnellzugriff.</li>
+  <li><strong>🗑 In Papierkorb löschen</strong> — nach Bestätigung wird der Ordner in den Windows-Papierkorb verschoben und der Baum aktualisiert.</li>
+</ul>
+
+<!-- Dateiliste -->
+<h2 id="dateiliste">Dateiliste</h2>
+<p>Nach dem Doppelklick auf einen Ordner erscheinen alle gefundenen MP3s in der Tabelle — sortiert nach Album, dann nach Tracknummer (natürliche Sortierung).</p>
+
+<h3>Spalten</h3>
+<p><strong>Rechtsklick auf eine Spaltenüberschrift</strong> öffnet ein Menü zum Ein-/Ausblenden. Standardmäßig sichtbar: 🖼, Track, Dateiname, Künstler, Album, Titel, Jahr, Genre, Dauer, Album Artist, BPM. Optional (Standard: aus): Bitrate, Kommentar, Label, Disc#.</p>
+<p>Spalten können per <strong>Drag &amp; Drop</strong> in der Überschrift umsortiert werden. Layout und Sichtbarkeit bleiben über Neustarts erhalten.</p>
+
+<h3>Auswahl &amp; Rechtsklick</h3>
+<ul>
+  <li><span class="key">Alle</span> / <span class="key">Keine</span> in der Toolbar für Schnellauswahl.</li>
+  <li><strong>Doppelklick</strong> auf eine Zeile öffnet den <a href="#tageditor">Tag-Editor</a>.</li>
+  <li><strong>Rechtsklick</strong> → <em>🏷 Tag bearbeiten</em> — bei einer Datei: vollständiger Editor; bei mehreren: Batch-Editor.</li>
+</ul>
+
+<!-- Cover-Panel -->
+<h2 id="coverpanel">Cover-Panel</h2>
+<p>Links unten im Explorer-Bereich werden zwei Cover nebeneinander angezeigt:</p>
+<table>
+  <tr><th>Bereich</th><th>Inhalt</th></tr>
+  <tr><td>folder.jpg</td><td>Die <code>folder.jpg</code> im aktuellen Ordner (falls vorhanden)</td></tr>
+  <tr><td>Tag Cover</td><td>Das eingebettete Cover der zuletzt angeklickten Datei</td></tr>
+</table>
+<p>Falls eine <code>folder.jpg</code> existiert aber kein Tag-Cover vorhanden ist, erscheint der Button <strong>folder.jpg als Tag-Cover setzen</strong> — ein Klick schreibt das Bild als APIC-Frame in alle markierten Dateien.</p>
+
+<!-- Toolbar -->
+<h2 id="toolbar">Toolbar</h2>
+<table>
+  <tr><th>Button</th><th>Funktion</th></tr>
+  <tr><td>🔍 Discogs</td><td>Öffnet den Discogs-Suchdialog für die markierten Dateien</td></tr>
+  <tr><td>✏️ Umbenennen</td><td>Öffnet den Umbennungs-Dialog mit Vorschau</td></tr>
+  <tr><td>⚡</td><td>Schnell-Umbenennen mit zuletzt verwendeter Maske (Maske im Tooltip)</td></tr>
+  <tr><td># Nummerierung</td><td>Schreibt fortlaufende Track-Nummern in die Tags der markierten Dateien</td></tr>
+  <tr><td>♩ BPM</td><td>Berechnet BPM via librosa und schreibt ins TBPM-Tag (überspringt vorhandene Werte)</td></tr>
+  <tr><td>Alle / Keine</td><td>Alle Dateien markieren / Auswahl aufheben</td></tr>
+  <tr><td>🔍 Cover-Scan</td><td>Scannt Unterordner auf Cover-Probleme (aktiv sobald ein Ordner im Baum markiert ist)</td></tr>
+</table>
+
+<!-- Discogs -->
+<h2 id="discogs">Discogs-Suche</h2>
+<p>Der Suchdialog öffnet sich mit Künstler, Album und Jahr aus den Tags der ersten markierten Datei vorausgefüllt. Die Suche startet automatisch.</p>
+<ul>
+  <li><strong>★ Master-Releases</strong> erscheinen gold und fett — sie enthalten die vollständige Referenz-Trackliste.</li>
+  <li>Ein <strong>Einfachklick</strong> auf ein Ergebnis lädt Trackanzahl, Gesamtspielzeit und Cover-Status.</li>
+  <li><strong>Lade Album!</strong> oder Doppelklick öffnet den TrackMatch-Dialog.</li>
+  <li>Künstler-Disambiguierungsnummern wie <em>Artist (2)</em> werden automatisch entfernt.</li>
+</ul>
+
+<div class="tip"><strong>Tipp:</strong> Mit einem Discogs Personal Access Token (Tools → Einstellungen) erhöht sich das Limit auf 60 Anfragen/Min und Cover-Downloads werden zuverlässiger.</div>
+
+<!-- TrackMatch -->
+<h2 id="trackmatch">TrackMatch-Dialog</h2>
+<p>Zeigt lokale Dateien (links) und die Discogs-Trackliste (rechts) nebeneinander.</p>
+
+<h3>Zuordnung anpassen</h3>
+<ul>
+  <li><strong>Klick auf die Dateinamen-Spalte</strong> → ▲/▼ verschiebt lokale Dateien.</li>
+  <li><strong>Klick auf die Discogs-Spalte</strong> → ▲/▼ verschiebt Discogs-Tracks.</li>
+  <li>Fehlende Dateien erscheinen als <span style="color:var(--red)">Datei nicht gefunden!</span> in Rot.</li>
+</ul>
+
+<h3>Compilation-Alben</h3>
+<p>Enthält die Discogs-Trackliste Einträge im Format <em>Titel /// Künstler</em>, wird die Compilation-Option automatisch aktiviert: Titel und Track-Künstler werden getrennt geschrieben, Album Artist wird auf <em>Various Artists</em> gesetzt.</p>
+
+<h3>Cover per Drag &amp; Drop</h3>
+<p>Ein Bild aus dem Browser oder dem Explorer kann direkt in das Cover-Feld gezogen werden. Der Button <strong>🔍 Suche Cover Bild</strong> öffnet eine Google-Bildersuche mit Künstler + Album + Jahr.</p>
+
+<!-- Tag-Editor -->
+<h2 id="tageditor">Tag-Editor</h2>
+<h3>Einzelne Datei</h3>
+<p>Doppelklick auf eine Zeile oder Rechtsklick → <em>Tag bearbeiten</em> öffnet den vollständigen Editor mit allen vorhandenen Werten. Nach dem Klick auf <strong>Speichern</strong> wird die Zeile in der Dateiliste aktualisiert.</p>
+
+<h3>Mehrere Dateien (Batch)</h3>
+<p>Mehrere Dateien markieren und dann rechtsklicken → <em>Tag bearbeiten</em>. Alle Felder zeigen den Platzhalter <span class="badge">&lt;beibehalten&gt;</span>. Nur ausgefüllte Felder werden geschrieben. Vor dem Speichern erscheint eine Bestätigung mit einer Übersicht aller Änderungen.</p>
+
+<!-- Umbenennen -->
+<h2 id="umbenennen">Umbenennen</h2>
+<p>Der Umbennungs-Dialog zeigt eine Vorschau die sich bei jeder Masken-Änderung sofort aktualisiert.</p>
+
+<h3>Masken speichern</h3>
+<p>Eigene Masken mit <span class="key">💾</span> speichern und mit <span class="key">🗑</span> löschen. Die zuletzt verwendete Maske wird beim nächsten Öffnen vorausgewählt.</p>
+
+<h3>Relative vs. absolute Pfade</h3>
+<ul>
+  <li><strong>Relative Maske</strong> <span class="badge">%6-%2</span> — Dateien bleiben im selben Ordner.</li>
+  <li><strong>Absolute Maske</strong> <span class="badge">I:\Musik\%1\[%4] %3\%6-%2</span> — Dateien werden in die angegebene Struktur verschoben. Unterordner werden angelegt. <code>folder.jpg</code> wird automatisch mitkopiert.</li>
+</ul>
+
+<!-- BPM -->
+<h2 id="bpm">BPM-Berechnung</h2>
+<p>Der Button <strong>♩ BPM</strong> startet die Berechnung für alle markierten Dateien im Hintergrund. Die Statusleiste zeigt den Fortschritt. Dateien mit vorhandenem TBPM-Tag werden übersprungen.</p>
+<p>Die Berechnung analysiert maximal 60 Sekunden pro Datei (ausreichend für genaue Ergebnisse). Der berechnete Wert wird in das <strong>TBPM</strong>-ID3-Tag geschrieben und in der BPM-Spalte der Tabelle angezeigt.</p>
+
+<!-- Cover-Scanner -->
+<h2 id="coverscanner">Cover-Qualitäts-Scanner</h2>
+<p>Der <strong>🔍 Cover-Scan</strong>-Button scannt alle Unterordner des im Explorer markierten Ordners und listet Alben mit Cover-Problemen:</p>
+<table>
+  <tr><th>Symbol</th><th>Problem</th></tr>
+  <tr><td>🔴 Korrupt</td><td>Cover kann nicht dekodiert werden (beschädigte Datei)</td></tr>
+  <tr><td>🟡 Zu klein</td><td>Cover kleiner als 300×300 Pixel</td></tr>
+  <tr><td>⚪ Kein Cover</td><td>Kein APIC-Tag vorhanden</td></tr>
+</table>
+<p><strong>Doppelklick</strong> auf einen Eintrag lädt den Ordner direkt in den Tagger zur Korrektur.</p>
+
+<!-- Nummerierung -->
+<h2 id="nummerierung">Automatische Nummerierung</h2>
+<p>Der Button <strong># Nummerierung</strong> schreibt fortlaufende Track-Nummern in die Tags aller markierten Dateien — in der Reihenfolge wie sie in der Tabelle erscheinen.</p>
+<p>Auffüllung richtet sich nach der Gesamtzahl:</p>
+<ul>
+  <li>1–9 Tracks → einstellig: <span class="badge">1, 2, 3</span></li>
+  <li>10–99 Tracks → zweistellig: <span class="badge">01, 02, 03</span></li>
+  <li>100+ Tracks → dreistellig: <span class="badge">001, 002, 003</span></li>
+</ul>
+
+<hr>
+
+<!-- Masken-Referenz -->
+<h2 id="masken">Umbenennungsmasken – Variablen</h2>
+<table>
+  <tr><th>Variable</th><th>Bedeutung</th><th>Beispiel</th></tr>
+  <tr><td>%1</td><td>Künstler (Artist)</td><td>Front 242</td></tr>
+  <tr><td>%2</td><td>Titel (Title)</td><td>Headhunter</td></tr>
+  <tr><td>%3</td><td>Album</td><td>Front By Front</td></tr>
+  <tr><td>%4</td><td>Jahr</td><td>1988</td></tr>
+  <tr><td>%5</td><td>Genre</td><td>EBM</td></tr>
+  <tr><td>%6</td><td>Track-Nummer</td><td>03</td></tr>
+  <tr><td>%t</td><td>Dauer</td><td>04:27</td></tr>
+  <tr><td>%b</td><td>Bitrate</td><td>320</td></tr>
+</table>
+<p>Unterordner werden mit <code>\</code> erzeugt. Absolute Pfade beginnen mit einem Laufwerksbuchstaben:</p>
+<pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:13px;color:var(--yellow);">I:\Musik\%1\[%4] %3\%6 - %2</pre>
+
+<!-- Spalten-Referenz -->
+<h2 id="spalten">Tabellenspalten</h2>
+<table>
+  <tr><th>Spalte</th><th>Tag</th><th>Standard</th></tr>
+  <tr><td>🖼</td><td>Cover vorhanden (♪ = ja)</td><td>sichtbar</td></tr>
+  <tr><td>Track</td><td>TRCK</td><td>sichtbar</td></tr>
+  <tr><td>Dateiname</td><td>—</td><td>sichtbar</td></tr>
+  <tr><td>Künstler</td><td>TPE1</td><td>sichtbar</td></tr>
+  <tr><td>Album</td><td>TALB</td><td>sichtbar</td></tr>
+  <tr><td>Titel</td><td>TIT2</td><td>sichtbar</td></tr>
+  <tr><td>Jahr</td><td>TDRC</td><td>sichtbar</td></tr>
+  <tr><td>Genre</td><td>TCON</td><td>sichtbar</td></tr>
+  <tr><td>Dauer</td><td>—</td><td>sichtbar</td></tr>
+  <tr><td>Album Artist</td><td>TPE2</td><td>sichtbar</td></tr>
+  <tr><td>BPM</td><td>TBPM</td><td>sichtbar</td></tr>
+  <tr><td>Bitrate</td><td>—</td><td style="color:var(--muted)">ausgeblendet</td></tr>
+  <tr><td>Kommentar</td><td>COMM</td><td style="color:var(--muted)">ausgeblendet</td></tr>
+  <tr><td>Label</td><td>TPUB</td><td style="color:var(--muted)">ausgeblendet</td></tr>
+  <tr><td>Disc#</td><td>TPOS</td><td style="color:var(--muted)">ausgeblendet</td></tr>
+</table>
+
+<!-- Einstellungen -->
+<h2 id="einstellungen">Einstellungen</h2>
+<p>Erreichbar über <strong>Tools → Einstellungen</strong>.</p>
+<table>
+  <tr><th>Einstellung</th><th>Beschreibung</th></tr>
+  <tr><td>Discogs Token</td><td>Persönlicher API-Token von discogs.com für höheres Rate-Limit</td></tr>
+  <tr><td>Letzten Ordner vergessen</td><td>Verhindert dass beim Start ein (ggf. nicht erreichbares) Netzwerklaufwerk gescannt wird</td></tr>
+</table>
+<p>Alle weiteren Einstellungen (Masken, Spalten-Layout, Favoriten, zuletzt geöffneter Ordner, Discogs-Checkbox-Zustände) werden automatisch in <code>~/.tagmegently.json</code> gespeichert.</p>
+
+</main>
+</div>
+
+<footer>
+  TagMeGently v1.3 · © PolzeSoft 2026 · <a href="https://polze.net">polze.net</a> · <a href="mailto:tagmegently@polze.net">tagmegently@polze.net</a> ·
+  <a href="https://github.com/noyse27/tagmegently">GitHub</a> ·
+  <a href="https://buymeacoffee.com/noyse27">Buy Me a Coffee</a>
+</footer>
+
+</body>
+</html>
