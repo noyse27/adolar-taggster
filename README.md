@@ -1,4 +1,4 @@
-# TagMeGently
+# Adolar Taggster
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-yellow?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/noyse27)
 
@@ -98,13 +98,13 @@ pip install PyQt6 mutagen requests Pillow
 python tagger.py
 ```
 
-Or download `TagMeGently.exe` from [Releases](https://github.com/noyse27/tagmegently/releases) — no Python required.
+Or download `Adolar Taggster.exe` from [Releases](https://github.com/noyse27/adolartaggster/releases) — no Python required.
 
 ## Discogs API Token
 
 1. Go to [discogs.com → Settings → Developers](https://www.discogs.com/settings/developers)
 2. Click **Generate new token**
-3. In TagMeGently: **Tools → Einstellungen** → paste the token
+3. In Adolar Taggster: **Tools → Einstellungen** → paste the token
 
 With token: 60 requests/min · without: 25/min
 
@@ -190,7 +190,7 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Support
 
-If TagMeGently saves you time, consider buying me a coffee ☕
+If Adolar Taggster saves you time, consider buying me a coffee ☕
 
 [![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/noyse27)
 

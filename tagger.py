@@ -1,5 +1,5 @@
 """
-TagMeGently - MP3 Tagger
+Adolar Taggster - MP3 Tagger
 Modern MP3 tagging tool with Discogs integration
 """
 import sys
@@ -462,7 +462,7 @@ class DiscogsSearchThread(QThread):
 
     def run(self):
         try:
-            headers = {'User-Agent': 'TagMeGently/1.0'}
+            headers = {'User-Agent': 'AdolarTaggster/1.0'}
             if self.token:
                 headers['Authorization'] = f'Discogs token={self.token}'
 
@@ -526,7 +526,7 @@ class DiscogsDetailThread(QThread):
 
     def run(self):
         try:
-            headers = {'User-Agent': 'TagMeGently/1.0'}
+            headers = {'User-Agent': 'AdolarTaggster/1.0'}
             if self.token:
                 headers['Authorization'] = f'Discogs token={self.token}'
 
@@ -640,7 +640,7 @@ class DropCoverLabel(QLabel):
                     data = Path(url.toLocalFile()).read_bytes()
                 else:
                     r = requests.get(url.toString(), timeout=15,
-                                     headers={'User-Agent': 'TagMeGently/1.0'})
+                                     headers={'User-Agent': 'AdolarTaggster/1.0'})
                     data = r.content
             except Exception as e:
                 print(f"Cover drop error: {e}")
@@ -2084,7 +2084,7 @@ class FolderScanThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TagMeGently")
+        self.setWindowTitle("Adolar Taggster")
         self.setMinimumSize(1200, 700)
         self.resize(1400, 800)
         self._current_folder = None
@@ -2096,7 +2096,7 @@ class MainWindow(QMainWindow):
         # _restore_last_folder disabled — crashes Qt on network paths (QFileSystemModel.index)
 
     def _load_config(self):
-        cfg = Path.home() / '.tagmegently.json'
+        cfg = Path.home() / '.adolartaggster.json'
         if cfg.exists():
             try:
                 return json.loads(cfg.read_text(encoding='utf-8'))
@@ -2105,7 +2105,7 @@ class MainWindow(QMainWindow):
         return {}
 
     def _save_config(self, data):
-        cfg = Path.home() / '.tagmegently.json'
+        cfg = Path.home() / '.adolartaggster.json'
         existing = self._load_config()
         existing.update(data)
         cfg.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -2158,7 +2158,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(settings_action)
 
         about_menu = menubar.addMenu("Über")
-        about_action = QAction("Über TagMeGently", self)
+        about_action = QAction("Über Adolar Taggster", self)
         about_action.triggered.connect(self._open_about)
         about_menu.addAction(about_action)
         help_action = QAction("Hilfe", self)
@@ -3150,13 +3150,13 @@ class MainWindow(QMainWindow):
     def _open_about(self):
         import webbrowser
         dlg = QDialog(self)
-        dlg.setWindowTitle("Über TagMeGently")
+        dlg.setWindowTitle("Über Adolar Taggster")
         dlg.setFixedSize(340, 260)
         layout = QVBoxLayout(dlg)
         layout.setSpacing(10)
         layout.setContentsMargins(30, 30, 30, 30)
 
-        title = QLabel("TagMeGently")
+        title = QLabel("Adolar Taggster")
         title.setStyleSheet("font-size: 20px; font-weight: 700; color: #89b4fa;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
@@ -3179,10 +3179,10 @@ class MainWindow(QMainWindow):
         web_btn.setAlignment = lambda *a: None  # suppress warning
         layout.addWidget(web_btn)
 
-        mail_btn = QPushButton("tagmegently@polze.net")
+        mail_btn = QPushButton("adolartaggster@polze.net")
         mail_btn.setStyleSheet("QPushButton { background:transparent; color:#89b4fa; border:none; font-size:12px; text-decoration:underline; } QPushButton:hover { color:#b4d0ff; }")
         mail_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        mail_btn.clicked.connect(lambda: webbrowser.open("mailto:tagmegently@polze.net"))
+        mail_btn.clicked.connect(lambda: webbrowser.open("mailto:adolartaggster@polze.net"))
         layout.addWidget(mail_btn)
 
         layout.addStretch()
