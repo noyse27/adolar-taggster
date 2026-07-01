@@ -1515,7 +1515,7 @@ class CoverScanDialog(QDialog):
         layout.addWidget(self.summary_label)
 
         btn_row = QHBoxLayout()
-        hint = QLabel("Doppelklick auf Zeile → Ordner im Tagger laden")
+        hint = QLabel("Doppelklick auf Zeile → Ordner im Tagger laden (Dialog bleibt offen)")
         hint.setStyleSheet("color: #6c7086; font-size: 11px;")
         btn_row.addWidget(hint)
         btn_row.addStretch()
@@ -1580,7 +1580,14 @@ class CoverScanDialog(QDialog):
         row = index.row()
         if row < len(self._folder_paths):
             self.load_folder.emit(self._folder_paths[row])
-            self.accept()
+            # Mark row as visited (strikethrough + dimmed) but keep dialog open
+            for col in range(self.result_table.columnCount()):
+                item = self.result_table.item(row, col)
+                if item:
+                    f = item.font()
+                    f.setStrikeOut(True)
+                    item.setFont(f)
+                    item.setForeground(QColor('#45475a'))
 
 
 class TagEditorDialog(QDialog):
