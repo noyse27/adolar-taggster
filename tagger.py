@@ -1644,6 +1644,10 @@ class TagEditorDialog(QDialog):
         layout.addWidget(info)
 
         btn_row = QHBoxLayout()
+        cover_btn = QPushButton("🔍 Cover suchen")
+        cover_btn.setObjectName("secondary")
+        cover_btn.clicked.connect(self._search_cover)
+        btn_row.addWidget(cover_btn)
         btn_row.addStretch()
         close_btn = QPushButton("Schließen")
         close_btn.setObjectName("secondary")
@@ -1653,6 +1657,14 @@ class TagEditorDialog(QDialog):
         btn_row.addWidget(close_btn)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
+
+    def _search_cover(self):
+        import webbrowser
+        from urllib.parse import quote
+        artist = self._inputs.get('artist', QLineEdit()).text()
+        album  = self._inputs.get('album',  QLineEdit()).text()
+        q = quote(f"{artist} {album} cover")
+        webbrowser.open(f"https://www.google.com/images?hl=&q={q}&tbs=isz:lt,islt:qsvga")
 
     def _save(self):
         tag_data = {k: inp.text() for k, inp in self._inputs.items()}
@@ -1678,6 +1690,8 @@ BATCH_FIELDS = [
     ('Kommentar',    'comment'),
 ]
 
+COMBO_FIELDS = {'artist', 'album', 'album_artist'}
+
 class BatchTagEditorDialog(QDialog):
     """Multi-file tag editor. Empty fields = keep existing; filled = overwrite all."""
 
@@ -1689,11 +1703,20 @@ class BatchTagEditorDialog(QDialog):
         self.setMinimumSize(480, 480)
         self._build_ui()
 
+    def _collect_values(self, key):
+        """Return sorted list of unique non-empty tag values across all files."""
+        seen = []
+        for _, tags in self.files:
+            v = tags.get(key, '').strip()
+            if v and v not in seen:
+                seen.append(v)
+        return seen
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
-        hint = QLabel(f"Leere Felder = <beibehalten>. Nur ausgefüllte Felder werden für alle {len(self.files)} Dateien gesetzt.")
+        hint = QLabel(f"Felder mit <beibehalten> werden nicht verändert. Nur geänderte Felder werden für alle {len(self.files)} Dateien gesetzt.")
         hint.setStyleSheet("color:#a6adc8; font-size:11px;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -1704,10 +1727,22 @@ class BatchTagEditorDialog(QDialog):
         for row, (label, key) in enumerate(BATCH_FIELDS):
             lbl = QLabel(label + ':')
             grid.addWidget(lbl, row, 0)
-            inp = QLineEdit()
-            inp.setPlaceholderText(KEEP)
-            self._inputs[key] = inp
-            grid.addWidget(inp, row, 1)
+            if key in COMBO_FIELDS:
+                cb = QComboBox()
+                cb.setEditable(True)
+                cb.addItem(KEEP)
+                for v in self._collect_values(key):
+                    cb.addItem(v)
+                cb.setCurrentIndex(0)
+                cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+                cb.lineEdit().setPlaceholderText(KEEP)
+                self._inputs[key] = cb
+                grid.addWidget(cb, row, 1)
+            else:
+                inp = QLineEdit()
+                inp.setPlaceholderText(KEEP)
+                self._inputs[key] = inp
+                grid.addWidget(inp, row, 1)
         layout.addLayout(grid)
 
         btn_row = QHBoxLayout()
@@ -1721,8 +1756,15 @@ class BatchTagEditorDialog(QDialog):
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
 
+    def _get_value(self, key):
+        w = self._inputs[key]
+        if isinstance(w, QComboBox):
+            v = w.currentText()
+            return '' if v == KEEP else v
+        return w.text()
+
     def _confirm_save(self):
-        changes = {k: inp.text() for k, inp in self._inputs.items() if inp.text()}
+        changes = {k: self._get_value(k) for k in self._inputs if self._get_value(k)}
         if not changes:
             QMessageBox.information(self, "Hinweis", "Keine Felder ausgefüllt — nichts zu tun.")
             return
