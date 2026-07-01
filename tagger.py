@@ -3250,7 +3250,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         for text, style in [
-            ("Version: 1.4", "color: #a6adc8; font-size: 12px;"),
+            ("Version: 1.5", "color: #a6adc8; font-size: 12px;"),
             ("© PolzeSoft 2026", "color: #6c7086; font-size: 12px;"),
         ]:
             lbl = QLabel(text)

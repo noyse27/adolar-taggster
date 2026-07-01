@@ -4,7 +4,7 @@
 
 A modern MP3 tagger with Discogs integration — built as a replacement for Tag&Rename, fixing its UTF-8/special character encoding bug when fetching metadata from Discogs.
 
-![Version](https://img.shields.io/badge/version-1.4-blue)
+![Version](https://img.shields.io/badge/version-1.5-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt6](https://img.shields.io/badge/PyQt6-6.6%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -134,7 +134,14 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### v1.4 (current)
+### v1.5 (current)
+- Cover-Scanner öffnet sich nicht-modal — Hauptfenster bleibt bedienbar, Ergebniszeilen werden nach Doppelklick abgehakt
+- Tag-Editor (Einzeldatei & Batch): Cover-Drop-Feld für Drag & Drop direkt aus Browser/Explorer
+- Tag-Editor: "Cover suchen" öffnet Google-Bildersuche mit Künstler/Album
+- Cover wird beim Speichern zusätzlich als `folder.jpg` abgelegt
+- Batch-Editor: Künstler/Album/Album Artist als Dropdown mit vorhandenen Werten der markierten Tracks statt reinem Textfeld
+
+### v1.4
 - App umbenannt zu **Adolar Taggster**
 
 ### v1.3
