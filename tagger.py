@@ -509,9 +509,57 @@ class DiscogsSearchThread(QThread):
                 words = self.album.lower().split()
                 results = [r for r in results
                            if all(w in r['title'].lower() for w in words)]
-            self.results_ready.emit(results)
+
+            # Expand each master into one row per available medium (Vinyl, CD, Cassette, ...)
+            # so the user can pick the right one instead of getting a random main release
+            expanded = []
+            for r in results:
+                variants = self._expand_master(r, headers) if r['is_master'] else None
+                expanded.extend(variants if variants else [r])
+
+            self.results_ready.emit(expanded)
         except Exception as e:
             self.error.emit(str(e))
+
+    def _expand_master(self, r, headers):
+        """Fetch a master's versions and return one representative row per medium."""
+        try:
+            resp = requests.get(
+                f"https://api.discogs.com/masters/{r['id']}/versions",
+                headers=headers, params={'per_page': 100}, timeout=15
+            )
+            if resp.status_code != 200:
+                return None
+            versions = resp.json().get('versions', [])
+            if not versions:
+                return None
+            by_medium = {}
+            for v in versions:
+                majors = v.get('major_formats') or []
+                key = majors[0] if majors else (v.get('format', '').split(',')[0].strip() or 'Unbekannt')
+                if key not in by_medium:
+                    by_medium[key] = v
+            out = []
+            for v in by_medium.values():
+                out.append({
+                    'id': v.get('id'),
+                    'title': r['title'],
+                    'year': v.get('released', '') or r['year'],
+                    'label': v.get('label', ''),
+                    'country': v.get('country', ''),
+                    'format': v.get('format', ''),
+                    'cover_url': v.get('thumb', '') or r.get('cover_url', ''),
+                    'thumb_url': v.get('thumb', '') or r.get('thumb_url', ''),
+                    'tracklist': [],
+                    'genre': r.get('genre', ''),
+                    'style': r.get('style', ''),
+                    'catno': v.get('catno', ''),
+                    'resource_url': v.get('resource_url', ''),
+                    'is_master': False,
+                })
+            return out
+        except Exception:
+            return None
 
 
 class DiscogsDetailThread(QThread):
