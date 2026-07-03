@@ -537,10 +537,17 @@ class DiscogsDetailThread(QThread):
             # If this is a master release, load the main release instead
             # to get full label/country info
             if 'main_release_url' in data:
+                master_id = data.get('id')
                 try:
                     r2 = requests.get(data['main_release_url'], headers=headers, timeout=15)
                     if r2.status_code == 200:
                         release_data = r2.json()
+                        # Main release is often Vinyl/Cassette (side A/B track numbers) —
+                        # prefer a CD/normal-numbered version from the master's other versions
+                        if master_id and self._is_vinyl_or_cassette(release_data):
+                            better = self._find_better_version(master_id, headers)
+                            if better:
+                                release_data = better
                         # Keep master's tracklist if release has none
                         if release_data.get('tracklist'):
                             data = release_data
@@ -599,6 +606,33 @@ class DiscogsDetailThread(QThread):
             self.detail_ready.emit(detail)
         except Exception as e:
             self.error.emit(str(e))
+
+    def _is_vinyl_or_cassette(self, release_data):
+        names = {f.get('name', '').lower() for f in release_data.get('formats', [])}
+        return bool(names & {'vinyl', 'cassette'})
+
+    def _find_better_version(self, master_id, headers):
+        """Pick a non-Vinyl/Cassette version from the master's release list, preferring CD."""
+        try:
+            r = requests.get(
+                f'https://api.discogs.com/masters/{master_id}/versions',
+                headers=headers, params={'per_page': 100}, timeout=15
+            )
+            if r.status_code != 200:
+                return None
+            versions = r.json().get('versions', [])
+            bad = ('vinyl', 'cassette')
+            candidates = [v for v in versions
+                          if not any(b in v.get('format', '').lower() for b in bad)]
+            if not candidates:
+                return None
+            candidates.sort(key=lambda v: 0 if 'cd' in v.get('format', '').lower() else 1)
+            rel = requests.get(candidates[0]['resource_url'], headers=headers, timeout=15)
+            if rel.status_code == 200:
+                return rel.json()
+        except Exception:
+            pass
+        return None
 
 
 class DropCoverLabel(QLabel):
@@ -1078,10 +1112,18 @@ class DiscogsDialog(QDialog):
         self.results_table.setHorizontalHeaderLabels(
             ["🖼", "Künstler / Album", "Jahr", "Label", "Format", "Land"]
         )
-        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        rh = self.results_table.horizontalHeader()
+        rh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.results_table.setColumnWidth(0, 26)
-        self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        rh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        rh.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.results_table.setColumnWidth(2, 60)
+        rh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        rh.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        self.results_table.setColumnWidth(4, 110)
+        rh.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+        self.results_table.setColumnWidth(5, 90)
+        rh.setStretchLastSection(False)
         self.results_table.setRowCount(len(results))
         bold = QFont(); bold.setBold(True)
         for i, r in enumerate(results):
