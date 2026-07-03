@@ -98,7 +98,7 @@ pip install PyQt6 mutagen requests Pillow
 python tagger.py
 ```
 
-Or download `AdolarTaggster.exe` from [Releases](https://github.com/noyse27/tagmegently/releases) — no Python required.
+Or download `AdolarTaggster.exe` from [Releases](https://github.com/noyse27/adolar-taggster/releases) — no Python required.
 
 ## Discogs API Token
 
