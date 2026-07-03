@@ -4,7 +4,7 @@
 
 A modern MP3 tagger with Discogs integration — built as a replacement for Tag&Rename, fixing its UTF-8/special character encoding bug when fetching metadata from Discogs.
 
-![Version](https://img.shields.io/badge/version-1.5-blue)
+![Version](https://img.shields.io/badge/version-1.6-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt6](https://img.shields.io/badge/PyQt6-6.6%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -98,7 +98,7 @@ pip install PyQt6 mutagen requests Pillow
 python tagger.py
 ```
 
-Or download `Adolar Taggster.exe` from [Releases](https://github.com/noyse27/adolartaggster/releases) — no Python required.
+Or download `AdolarTaggster.exe` from [Releases](https://github.com/noyse27/tagmegently/releases) — no Python required.
 
 ## Discogs API Token
 
@@ -134,7 +134,12 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### v1.5 (current)
+### v1.6 (current)
+- Discogs search: master results expand into one row per medium (Vinyl, CD, Cassette, ...) instead of a single unpredictable main release
+- Discogs search: Year/Format/Land columns now all manually resizable
+- Discogs search: cover pixel dimensions shown in status line (e.g. `🖼 150×150 px`) when previewing a result
+
+### v1.5
 - Cover-Scanner öffnet sich nicht-modal — Hauptfenster bleibt bedienbar, Ergebniszeilen werden nach Doppelklick abgehakt
 - Tag-Editor (Einzeldatei & Batch): Cover-Drop-Feld für Drag & Drop direkt aus Browser/Explorer
 - Tag-Editor: "Cover suchen" öffnet Google-Bildersuche mit Künstler/Album
