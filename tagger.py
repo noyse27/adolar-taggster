@@ -1241,7 +1241,15 @@ class DiscogsDialog(QDialog):
                 except ValueError:
                     pass
         dur_str = format_duration(total_secs) if total_secs else '–'
-        cover_str = '🖼 Cover' if detail.get('cover_data') else '∅ Kein Cover'
+        cover_data = detail.get('cover_data')
+        if cover_data:
+            try:
+                img = Image.open(BytesIO(cover_data))
+                cover_str = f"🖼 {img.width}×{img.height} px"
+            except Exception:
+                cover_str = '🖼 Cover'
+        else:
+            cover_str = '∅ Kein Cover'
         self.status_label.setText(
             f"{len(tracks)} Tracks  ·  {dur_str}  ·  {cover_str}"
         )
