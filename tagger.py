@@ -781,6 +781,7 @@ class TrackMatchDialog(QDialog):
         self._fill_meta(detail)
         if detail.get('cover_data'):
             self.cover_label.set_cover(detail['cover_data'])
+            self._on_cover_changed(detail['cover_data'])
         self._check_compilation()
 
     def _build_ui(self):
