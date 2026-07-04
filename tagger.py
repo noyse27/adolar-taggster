@@ -7,6 +7,7 @@ import os
 import re
 import json
 import requests
+from datetime import datetime
 from pathlib import Path
 from io import BytesIO
 
@@ -1309,6 +1310,92 @@ class DiscogsDialog(QDialog):
         self.status_label.setText(f"Fehler: {msg}")
 
 
+class ReplaceRulesDialog(QDialog):
+    """Table of find/replace rules applied to the generated filename during rename."""
+
+    def __init__(self, rules, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ersetzungsregeln beim Umbenennen")
+        self.setMinimumSize(480, 380)
+        self._rules = [list(r) for r in rules]
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "Wird beim Umbenennen auf den generierten Dateinamen angewendet, "
+            "z.B. \"(\" → \"[\" um Klammern im Tag zu eckigen Klammern im Dateinamen zu machen."
+        )
+        info.setStyleSheet("color:#6c7086; font-size:11px;")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Suchen", "Ersetzen durch"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+        self._reload_table()
+
+        row_btns = QHBoxLayout()
+        add_btn = QPushButton("+ Zeile")
+        add_btn.setObjectName("secondary")
+        add_btn.clicked.connect(self._add_row)
+        del_btn = QPushButton("– Zeile")
+        del_btn.setObjectName("secondary")
+        del_btn.clicked.connect(self._delete_row)
+        row_btns.addWidget(add_btn)
+        row_btns.addWidget(del_btn)
+        row_btns.addStretch()
+        layout.addLayout(row_btns)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Abbrechen")
+        cancel_btn.setObjectName("secondary")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Speichern")
+        save_btn.clicked.connect(self._save)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+    def _reload_table(self):
+        self.table.setRowCount(len(self._rules))
+        for i, (src, dst) in enumerate(self._rules):
+            self.table.setItem(i, 0, QTableWidgetItem(src))
+            self.table.setItem(i, 1, QTableWidgetItem(dst))
+
+    def _add_row(self):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem(""))
+        self.table.setItem(row, 1, QTableWidgetItem(""))
+
+    def _delete_row(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.removeRow(row)
+
+    def get_rules(self):
+        rules = []
+        for row in range(self.table.rowCount()):
+            src_item = self.table.item(row, 0)
+            dst_item = self.table.item(row, 1)
+            src = src_item.text() if src_item else ''
+            dst = dst_item.text() if dst_item else ''
+            if src:
+                rules.append([src, dst])
+        return rules
+
+    def _save(self):
+        rules = self.get_rules()
+        parent = self.parent()
+        if parent and hasattr(parent, '_save_config'):
+            parent._save_config({'rename_replacements': rules})
+        self.accept()
+
+
 class RenameDialog(QDialog):
     masks_changed = pyqtSignal(list)
 
@@ -1427,6 +1514,16 @@ class RenameDialog(QDialog):
                 clean.append(re.sub(r'[<>:"/|?*]', '', p).strip())
         return '\\'.join(clean)
 
+    def _apply_replacements(self, s):
+        parent = self.parent()
+        rules = []
+        if parent and hasattr(parent, '_load_config'):
+            rules = parent._load_config().get('rename_replacements', [])
+        for rule in rules:
+            if isinstance(rule, (list, tuple)) and len(rule) == 2 and rule[0]:
+                s = s.replace(rule[0], rule[1])
+        return s
+
     def _apply_case(self, s):
         case = self.case_combo.currentIndex()
         if case == 1:
@@ -1457,7 +1554,7 @@ class RenameDialog(QDialog):
         self.preview_table.setRowCount(len(self.files))
         for i, (path, tags) in enumerate(self.files):
             old_name = Path(path).name
-            new_base = self._apply_case(self._apply_mask(mask, tags))
+            new_base = self._apply_case(self._apply_replacements(self._apply_mask(mask, tags)))
             dest = self._resolve_dest(path, new_base)
             new_display = str(dest) if dest.is_absolute() else dest.name
             self.preview_table.setItem(i, 0, QTableWidgetItem(old_name))
@@ -1492,7 +1589,7 @@ class RenameDialog(QDialog):
                         break
 
         for path, tags in self.files:
-            new_base = self._apply_case(self._apply_mask(mask, tags))
+            new_base = self._apply_case(self._apply_replacements(self._apply_mask(mask, tags)))
             src = Path(path)
             dest = self._resolve_dest(path, new_base)
             if src == dest:
@@ -1576,8 +1673,14 @@ class CoverScanDialog(QDialog):
         self.setWindowTitle("Cover-Qualitäts-Scanner")
         self.setMinimumSize(900, 600)
         self.root = root
+        self._bad_folders = []
+        self._scan_done = False
         self._build_ui()
-        QTimer.singleShot(100, self._start_scan)
+        cached = self._get_cache()
+        if cached and cached.get('root') == str(self.root):
+            self._load_cache(cached)
+        else:
+            QTimer.singleShot(100, self._start_scan)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -1617,13 +1720,63 @@ class CoverScanDialog(QDialog):
         hint.setStyleSheet("color: #6c7086; font-size: 11px;")
         btn_row.addWidget(hint)
         btn_row.addStretch()
+        self.rescan_btn = QPushButton("🔄 Neu scannen")
+        self.rescan_btn.setObjectName("secondary")
+        self.rescan_btn.clicked.connect(self._start_scan)
+        btn_row.addWidget(self.rescan_btn)
+        self.load_btn = QPushButton("📂 Letzte laden")
+        self.load_btn.setObjectName("secondary")
+        self.load_btn.clicked.connect(self._load_last_clicked)
+        btn_row.addWidget(self.load_btn)
+        self.save_btn = QPushButton("💾 Speichern")
+        self.save_btn.setObjectName("secondary")
+        self.save_btn.clicked.connect(self._save_scan_result)
+        btn_row.addWidget(self.save_btn)
         close_btn = QPushButton("Schließen")
         close_btn.setObjectName("secondary")
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+    def _get_cache(self):
+        parent = self.parent()
+        if parent and hasattr(parent, '_load_config'):
+            return parent._load_config().get('cover_scan_cache')
+        return None
+
+    def _load_cache(self, cache):
+        self.root = cache.get('root', self.root)
+        self._on_result(cache.get('bad_folders', []))
+        ts = cache.get('timestamp', '?')
+        self.progress_label.setText(f"Gespeicherte Suche geladen ({ts}) — {self.root}")
+        self.progress_bar.setMaximum(1)
+        self.progress_bar.setValue(1)
+
+    def _load_last_clicked(self):
+        cache = self._get_cache()
+        if not cache:
+            QMessageBox.information(self, "Hinweis", "Keine gespeicherte Suche vorhanden.")
+            return
+        self._load_cache(cache)
+
+    def _save_scan_result(self):
+        parent = self.parent()
+        if not (parent and hasattr(parent, '_save_config')):
+            return
+        if not self._scan_done:
+            QMessageBox.information(self, "Hinweis", "Noch kein abgeschlossenes Scan-Ergebnis zum Speichern.")
+            return
+        data = {
+            'root': str(self.root),
+            'bad_folders': self._bad_folders,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
+        }
+        parent._save_config({'cover_scan_cache': data})
+        QMessageBox.information(self, "Gespeichert",
+                                 f"Suchergebnis für {Path(self.root).name} gespeichert — kann später ohne erneuten Scan geladen werden.")
+
     def _start_scan(self):
+        self.result_table.setRowCount(0)
         self._thread = CoverScanThread(self.root)
         self._thread.progress.connect(self._on_progress)
         self._thread.result.connect(self._on_result)
@@ -1637,6 +1790,8 @@ class CoverScanDialog(QDialog):
             self.progress_label.setText(f"Scanne: …{short}")
 
     def _on_result(self, bad_folders):
+        self._bad_folders = bad_folders
+        self._scan_done = True
         self.progress_label.setText(f"Scan abgeschlossen — {len(bad_folders)} Ordner mit Problemen")
         self.progress_bar.setValue(self.progress_bar.maximum())
 
@@ -2398,6 +2553,14 @@ class MainWindow(QMainWindow):
         self.quick_rename_btn.clicked.connect(self._quick_rename)
         self._update_quick_rename_tooltip()
 
+        self.replace_rules_btn = QPushButton("X→Y")
+        self.replace_rules_btn.setToolTip(
+            "Ersetzungsregeln für den generierten Dateinamen beim Umbenennen\n"
+            "z.B. '(' im Tag → '[' im Dateinamen"
+        )
+        self.replace_rules_btn.setStyleSheet(secondary_ss)
+        self.replace_rules_btn.clicked.connect(self._open_replace_rules)
+
         self.autonumber_btn = QPushButton("# Nummerierung")
         self.autonumber_btn.setEnabled(False)
         self.autonumber_btn.setToolTip(
@@ -2439,6 +2602,7 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.discogs_btn)
         toolbar_layout.addWidget(self.rename_btn)
         toolbar_layout.addWidget(self.quick_rename_btn)
+        toolbar_layout.addWidget(self.replace_rules_btn)
         toolbar_layout.addWidget(self.autonumber_btn)
         toolbar_layout.addWidget(self.bpm_btn)
         toolbar_layout.addSpacing(10)
@@ -3199,6 +3363,11 @@ class MainWindow(QMainWindow):
         dlg.exec()
         if self._current_folder:
             self._reload_keep_selection()
+
+    def _open_replace_rules(self):
+        rules = self._load_config().get('rename_replacements', [])
+        dlg = ReplaceRulesDialog(rules, parent=self)
+        dlg.exec()
 
     def _write_folder_jpg_to_tags(self):
         if not self._current_folder_jpg:
