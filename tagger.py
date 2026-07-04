@@ -1331,9 +1331,13 @@ class ReplaceRulesDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Suchen", "Ersetzen durch"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Suchen", "Ersetzen durch", ""])
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(2, 32)
         layout.addWidget(self.table)
         self._reload_table()
 
@@ -1341,11 +1345,7 @@ class ReplaceRulesDialog(QDialog):
         add_btn = QPushButton("+ Zeile")
         add_btn.setObjectName("secondary")
         add_btn.clicked.connect(self._add_row)
-        del_btn = QPushButton("– Zeile")
-        del_btn.setObjectName("secondary")
-        del_btn.clicked.connect(self._delete_row)
         row_btns.addWidget(add_btn)
-        row_btns.addWidget(del_btn)
         row_btns.addStretch()
         layout.addLayout(row_btns)
 
@@ -1365,17 +1365,27 @@ class ReplaceRulesDialog(QDialog):
         for i, (src, dst) in enumerate(self._rules):
             self.table.setItem(i, 0, QTableWidgetItem(src))
             self.table.setItem(i, 1, QTableWidgetItem(dst))
+            self._add_delete_button(i)
+
+    def _add_delete_button(self, row):
+        btn = QPushButton("🗑")
+        btn.setFixedWidth(28)
+        btn.setStyleSheet("QPushButton { border:none; background:transparent; } QPushButton:hover { color:#f38ba8; }")
+        btn.clicked.connect(lambda: self._delete_row_at(btn))
+        self.table.setCellWidget(row, 2, btn)
+
+    def _delete_row_at(self, btn):
+        for row in range(self.table.rowCount()):
+            if self.table.cellWidget(row, 2) is btn:
+                self.table.removeRow(row)
+                break
 
     def _add_row(self):
         row = self.table.rowCount()
         self.table.insertRow(row)
         self.table.setItem(row, 0, QTableWidgetItem(""))
         self.table.setItem(row, 1, QTableWidgetItem(""))
-
-    def _delete_row(self):
-        row = self.table.currentRow()
-        if row >= 0:
-            self.table.removeRow(row)
+        self._add_delete_button(row)
 
     def get_rules(self):
         rules = []
