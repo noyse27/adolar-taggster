@@ -1370,7 +1370,11 @@ class ReplaceRulesDialog(QDialog):
     def _add_delete_button(self, row):
         btn = QPushButton("🗑")
         btn.setFixedWidth(28)
-        btn.setStyleSheet("QPushButton { border:none; background:transparent; } QPushButton:hover { color:#f38ba8; }")
+        btn.setStyleSheet(
+            "QPushButton { border:none; background-color:#313244; color:#f38ba8; "
+            "border-radius:4px; padding:2px; min-height:22px; } "
+            "QPushButton:hover { background-color:#45475a; }"
+        )
         btn.clicked.connect(lambda: self._delete_row_at(btn))
         self.table.setCellWidget(row, 2, btn)
 
@@ -1684,6 +1688,7 @@ class CoverScanDialog(QDialog):
         self.setMinimumSize(900, 600)
         self.root = root
         self._bad_folders = []
+        self._visited_rows = set()
         self._scan_done = False
         self._build_ui()
         cached = self._get_cache()
@@ -1776,14 +1781,16 @@ class CoverScanDialog(QDialog):
         if not self._scan_done:
             QMessageBox.information(self, "Hinweis", "Noch kein abgeschlossenes Scan-Ergebnis zum Speichern.")
             return
+        remaining = [bf for i, bf in enumerate(self._bad_folders) if i not in self._visited_rows]
         data = {
             'root': str(self.root),
-            'bad_folders': self._bad_folders,
+            'bad_folders': remaining,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
         }
         parent._save_config({'cover_scan_cache': data})
         QMessageBox.information(self, "Gespeichert",
-                                 f"Suchergebnis für {Path(self.root).name} gespeichert — kann später ohne erneuten Scan geladen werden.")
+                                 f"{len(remaining)} offene(r) Ordner für {Path(self.root).name} gespeichert "
+                                 f"({len(self._visited_rows)} abgehakte übersprungen) — kann später ohne erneuten Scan geladen werden.")
 
     def _start_scan(self):
         self.result_table.setRowCount(0)
@@ -1801,6 +1808,7 @@ class CoverScanDialog(QDialog):
 
     def _on_result(self, bad_folders):
         self._bad_folders = bad_folders
+        self._visited_rows = set()
         self._scan_done = True
         self.progress_label.setText(f"Scan abgeschlossen — {len(bad_folders)} Ordner mit Problemen")
         self.progress_bar.setValue(self.progress_bar.maximum())
@@ -1843,6 +1851,7 @@ class CoverScanDialog(QDialog):
         row = index.row()
         if row < len(self._folder_paths):
             self.load_folder.emit(self._folder_paths[row])
+            self._visited_rows.add(row)
             # Mark row as visited (strikethrough + dimmed) but keep dialog open
             for col in range(self.result_table.columnCount()):
                 item = self.result_table.item(row, col)
