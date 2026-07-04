@@ -1690,12 +1690,13 @@ class CoverScanDialog(QDialog):
         self._bad_folders = []
         self._visited_rows = set()
         self._scan_done = False
+        self._scanning = False
         self._build_ui()
         cached = self._get_cache()
         if cached and cached.get('root') == str(self.root):
             self._load_cache(cached)
         else:
-            QTimer.singleShot(100, self._start_scan)
+            self.progress_label.setText(f"Bereit — Ordner: {self.root}")
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -1735,8 +1736,9 @@ class CoverScanDialog(QDialog):
         hint.setStyleSheet("color: #6c7086; font-size: 11px;")
         btn_row.addWidget(hint)
         btn_row.addStretch()
-        self.rescan_btn = QPushButton("🔄 Neu scannen")
+        self.rescan_btn = QPushButton("🔍 Scannen")
         self.rescan_btn.setObjectName("secondary")
+        self.rescan_btn.setToolTip("Scannt den aktuell ausgewählten Ordner neu")
         self.rescan_btn.clicked.connect(self._start_scan)
         btn_row.addWidget(self.rescan_btn)
         self.load_btn = QPushButton("📂 Letzte laden")
@@ -1768,6 +1770,9 @@ class CoverScanDialog(QDialog):
         self.progress_bar.setValue(1)
 
     def _load_last_clicked(self):
+        if self._scanning:
+            QMessageBox.information(self, "Hinweis", "Scan läuft noch — bitte warten oder abbrechen.")
+            return
         cache = self._get_cache()
         if not cache:
             QMessageBox.information(self, "Hinweis", "Keine gespeicherte Suche vorhanden.")
@@ -1793,6 +1798,12 @@ class CoverScanDialog(QDialog):
                                  f"({len(self._visited_rows)} abgehakte übersprungen) — kann später ohne erneuten Scan geladen werden.")
 
     def _start_scan(self):
+        if self._scanning:
+            return
+        self._scanning = True
+        self.rescan_btn.setEnabled(False)
+        self.load_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
         self.result_table.setRowCount(0)
         self._thread = CoverScanThread(self.root)
         self._thread.progress.connect(self._on_progress)
@@ -1810,6 +1821,10 @@ class CoverScanDialog(QDialog):
         self._bad_folders = bad_folders
         self._visited_rows = set()
         self._scan_done = True
+        self._scanning = False
+        self.rescan_btn.setEnabled(True)
+        self.load_btn.setEnabled(True)
+        self.save_btn.setEnabled(True)
         self.progress_label.setText(f"Scan abgeschlossen — {len(bad_folders)} Ordner mit Problemen")
         self.progress_bar.setValue(self.progress_bar.maximum())
 
