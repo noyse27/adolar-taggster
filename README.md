@@ -4,7 +4,7 @@
 
 A modern MP3 tagger with Discogs integration — built as a replacement for Tag&Rename, fixing its UTF-8/special character encoding bug when fetching metadata from Discogs.
 
-![Version](https://img.shields.io/badge/version-1.6-blue)
+![Version](https://img.shields.io/badge/version-1.7-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt6](https://img.shields.io/badge/PyQt6-6.6%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -134,7 +134,17 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### v1.6 (current)
+### v1.7 (current)
+- Cover Quality Scanner: save/load scan results (no rescan needed for large folders), explicit "Scannen" button instead of auto-scan on open
+- New toolbar button "X→Y": table-based find/replace rules applied to generated filenames during rename, with per-row delete
+- Settings dialog: Discogs token masked with reveal toggle; new "numeric track display" option normalizes Vinyl/Cassette-style positions (A1/B1) to sequential zero-padded numbers (01/14...14/14), both displayed and saved
+- DropCoverLabel (TrackMatch, Tag editors): thicker red border when a loaded cover is under 300px on either side
+- TrackMatch: cover dimensions now shown for covers loaded from Discogs (previously only shown for drag & drop)
+- Main file table: ▲ Hoch / ▼ Runter buttons to manually reorder a selected row (useful before # Nummerierung)
+- Tools menu: "Einstellungen (Discogs Token)" renamed to "Einstellungen"
+- Fixed clipped icon-only buttons (rename dialog save/delete, token reveal)
+
+### v1.6
 - Discogs search: master results expand into one row per medium (Vinyl, CD, Cassette, ...) instead of a single unpredictable main release
 - Discogs search: Year/Format/Land columns now all manually resizable
 - Discogs search: cover pixel dimensions shown in status line (e.g. `🖼 150×150 px`) when previewing a result
