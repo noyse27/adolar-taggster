@@ -2678,6 +2678,18 @@ class MainWindow(QMainWindow):
         self.deselect_btn.setStyleSheet(secondary_ss)
         self.deselect_btn.clicked.connect(self._deselect_all)
 
+        self.move_up_btn = QPushButton("▲ Hoch")
+        self.move_up_btn.setEnabled(False)
+        self.move_up_btn.setStyleSheet(secondary_ss)
+        self.move_up_btn.setToolTip("Markierte Zeile in der Liste nach oben verschieben")
+        self.move_up_btn.clicked.connect(self._move_file_row_up)
+
+        self.move_down_btn = QPushButton("▼ Runter")
+        self.move_down_btn.setEnabled(False)
+        self.move_down_btn.setStyleSheet(secondary_ss)
+        self.move_down_btn.setToolTip("Markierte Zeile in der Liste nach unten verschieben")
+        self.move_down_btn.clicked.connect(self._move_file_row_down)
+
         self.cover_scan_btn = QPushButton("🔍  Cover-Scan")
         self.cover_scan_btn.setEnabled(False)
         self.cover_scan_btn.setStyleSheet(secondary_ss)
@@ -2702,6 +2714,9 @@ class MainWindow(QMainWindow):
         toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(self.select_all_btn)
         toolbar_layout.addWidget(self.deselect_btn)
+        toolbar_layout.addSpacing(10)
+        toolbar_layout.addWidget(self.move_up_btn)
+        toolbar_layout.addWidget(self.move_down_btn)
         toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(self.cover_scan_btn)
         toolbar_layout.addWidget(self.cancel_scan_btn)
@@ -2919,13 +2934,7 @@ class MainWindow(QMainWindow):
         self.file_table.setColumnWidth(0, 28)
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.file_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        # Sorting disabled — conflicts with drag & drop row reordering below
-        self.file_table.setSortingEnabled(False)
-        self.file_table.setDragEnabled(True)
-        self.file_table.setAcceptDrops(True)
-        self.file_table.setDropIndicatorShown(True)
-        self.file_table.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.file_table.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.file_table.setSortingEnabled(True)
         self.file_table.setAlternatingRowColors(True)
         self.file_table.verticalHeader().setDefaultSectionSize(22)
         self.file_table.verticalHeader().setVisible(False)
@@ -3181,6 +3190,7 @@ class MainWindow(QMainWindow):
             self.file_table.setItem(i, 13, QTableWidgetItem(tags.get('label', '')))
             self.file_table.setItem(i, 14, QTableWidgetItem(tags.get('discnumber', '')))
 
+        self.file_table.setSortingEnabled(True)
         self._select_all()
         self.status_bar.showMessage(
             f"{len(raw)} MP3-Datei(en) geladen  —  {self._current_folder}"
@@ -3230,6 +3240,8 @@ class MainWindow(QMainWindow):
         self.quick_rename_btn.setEnabled(has_sel)
         self.autonumber_btn.setEnabled(has_sel)
         self.bpm_btn.setEnabled(has_sel)
+        self.move_up_btn.setEnabled(selected == 1)
+        self.move_down_btn.setEnabled(selected == 1)
         if self._files:
             self.status_bar.showMessage(
                 f"{selected} von {len(self._files)} Datei(en) markiert  —  {self._current_folder}"
@@ -3251,6 +3263,30 @@ class MainWindow(QMainWindow):
             label.setPixmap(QPixmap())
             label.setText("–")
         return False
+
+    def _move_file_row_up(self):
+        self._move_file_row(-1)
+
+    def _move_file_row_down(self):
+        self._move_file_row(1)
+
+    def _move_file_row(self, delta):
+        rows = [idx.row() for idx in self.file_table.selectionModel().selectedRows()]
+        if len(rows) != 1:
+            return
+        row = rows[0]
+        target = row + delta
+        if target < 0 or target >= self.file_table.rowCount():
+            return
+        was_sorting = self.file_table.isSortingEnabled()
+        self.file_table.setSortingEnabled(False)
+        for col in range(self.file_table.columnCount()):
+            item_a = self.file_table.takeItem(row, col)
+            item_b = self.file_table.takeItem(target, col)
+            self.file_table.setItem(row, col, item_b)
+            self.file_table.setItem(target, col, item_a)
+        self.file_table.setSortingEnabled(was_sorting)
+        self.file_table.selectRow(target)
 
     def _update_folder_cover(self):
         """Load and show folder.jpg — called once after folder scan completes."""
