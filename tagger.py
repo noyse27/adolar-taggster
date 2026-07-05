@@ -2919,7 +2919,13 @@ class MainWindow(QMainWindow):
         self.file_table.setColumnWidth(0, 28)
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.file_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.file_table.setSortingEnabled(True)
+        # Sorting disabled — conflicts with drag & drop row reordering below
+        self.file_table.setSortingEnabled(False)
+        self.file_table.setDragEnabled(True)
+        self.file_table.setAcceptDrops(True)
+        self.file_table.setDropIndicatorShown(True)
+        self.file_table.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.file_table.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.file_table.setAlternatingRowColors(True)
         self.file_table.verticalHeader().setDefaultSectionSize(22)
         self.file_table.verticalHeader().setVisible(False)
@@ -3175,7 +3181,6 @@ class MainWindow(QMainWindow):
             self.file_table.setItem(i, 13, QTableWidgetItem(tags.get('label', '')))
             self.file_table.setItem(i, 14, QTableWidgetItem(tags.get('discnumber', '')))
 
-        self.file_table.setSortingEnabled(True)
         self._select_all()
         self.status_bar.showMessage(
             f"{len(raw)} MP3-Datei(en) geladen  —  {self._current_folder}"
