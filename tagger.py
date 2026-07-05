@@ -697,10 +697,17 @@ class DropCoverLabel(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("Kein Cover\n(Bild hierher ziehen)")
         self._cover_data = None
+        self._too_small = False
         self._set_idle()
 
+    _WARN_STYLE = ("background-color:#1e1e2e; border:3px solid #f38ba8;"
+                   "border-radius:8px; color:#f38ba8; font-size:11px;")
+
     def _set_idle(self):
-        self.setStyleSheet(self._BASE_STYLE.format(border='#45475a', color='#585b70'))
+        if getattr(self, '_too_small', False):
+            self.setStyleSheet(self._WARN_STYLE)
+        else:
+            self.setStyleSheet(self._BASE_STYLE.format(border='#45475a', color='#585b70'))
 
     def _set_hover(self):
         self.setStyleSheet(self._BASE_STYLE.format(border='#89b4fa', color='#89b4fa'))
@@ -751,6 +758,12 @@ class DropCoverLabel(QLabel):
             self.setText("")
         else:
             self.setText("Cover Fehler")
+        self._too_small = False
+        try:
+            img = Image.open(BytesIO(data))
+            self._too_small = img.width < 300 or img.height < 300
+        except Exception:
+            pass
         self._set_idle()
 
     def get_cover_data(self):
@@ -905,6 +918,10 @@ class TrackMatchDialog(QDialog):
         n = max(len(self._file_paths), len(self._tracklist))
         self.match_table.setRowCount(n)
         total = len(self._tracklist)
+        numeric_display = False
+        parent = self.parent()
+        if parent and hasattr(parent, '_load_config'):
+            numeric_display = parent._load_config().get('numeric_track_display', False)
         for i in range(n):
             path = self._file_paths[i] if i < len(self._file_paths) else None
             track = self._tracklist[i] if i < len(self._tracklist) else {}
@@ -926,7 +943,11 @@ class TrackMatchDialog(QDialog):
 
             self.match_table.setItem(i, 2, QTableWidgetItem(track.get('title', '')))
             pos = track.get('position', '')
-            self.match_table.setItem(i, 3, QTableWidgetItem(f"{pos}/{total}" if pos else ''))
+            if pos and numeric_display:
+                display_pos = str(i + 1)
+            else:
+                display_pos = pos
+            self.match_table.setItem(i, 3, QTableWidgetItem(f"{display_pos}/{total}" if display_pos else ''))
 
     def _fill_meta(self, detail):
         self.artist_inp.setText(detail.get('artist', ''))
@@ -2122,16 +2143,30 @@ class BatchTagEditorDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, token, parent=None):
+    def __init__(self, token, numeric_track=False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Einstellungen")
         self.setMinimumWidth(450)
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel("Discogs Personal Access Token:"))
+        token_row = QHBoxLayout()
         self.token_input = QLineEdit(token or '')
+        self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.token_input.setPlaceholderText("Leer lassen für anonyme Suche (Rate-Limit)")
-        layout.addWidget(self.token_input)
+        token_row.addWidget(self.token_input, 1)
+        self.toggle_token_btn = QPushButton("👁")
+        self.toggle_token_btn.setObjectName("secondary")
+        self.toggle_token_btn.setFixedWidth(32)
+        self.toggle_token_btn.setCheckable(True)
+        self.toggle_token_btn.setEnabled(bool(token))
+        self.toggle_token_btn.toggled.connect(
+            lambda checked: self.token_input.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
+        self.token_input.textChanged.connect(
+            lambda t: self.toggle_token_btn.setEnabled(bool(t)))
+        token_row.addWidget(self.toggle_token_btn)
+        layout.addLayout(token_row)
 
         hint = QLabel(
             "Token erstellen unter: discogs.com → Einstellungen → Entwickler\n"
@@ -2139,6 +2174,16 @@ class SettingsDialog(QDialog):
         )
         hint.setStyleSheet("color: #a6adc8; font-size: 11px;")
         layout.addWidget(hint)
+
+        layout.addSpacing(10)
+        self.cb_numeric_track = QCheckBox("Tracknummer in Discogs-Suche immer numerisch anzeigen (1/n, 2/n, …)")
+        self.cb_numeric_track.setChecked(numeric_track)
+        self.cb_numeric_track.setToolTip(
+            "Zeigt im Track-Match-Dialog immer fortlaufend numerierte Tracknummern,\n"
+            "unabhängig davon was Discogs liefert (z.B. Vinyl-Seiten A1/B2).\n"
+            "Betrifft nur die Anzeige — beim Speichern wird wie gewohnt verfahren."
+        )
+        layout.addWidget(self.cb_numeric_track)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -2149,6 +2194,9 @@ class SettingsDialog(QDialog):
 
     def get_token(self):
         return self.token_input.text().strip()
+
+    def get_numeric_track(self):
+        return self.cb_numeric_track.isChecked()
 
 
 class FolderTreeWidget(QTreeWidget):
@@ -3583,10 +3631,12 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_settings(self):
-        dlg = SettingsDialog(self._discogs_token, parent=self)
+        numeric_track = self._load_config().get('numeric_track_display', False)
+        dlg = SettingsDialog(self._discogs_token, numeric_track, parent=self)
         if dlg.exec():
             self._discogs_token = dlg.get_token()
             self._save_token(self._discogs_token)
+            self._save_config({'numeric_track_display': dlg.get_numeric_track()})
 
 
 def _make_icon():
