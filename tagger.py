@@ -2199,12 +2199,16 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(self.cb_numeric_track)
 
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Abbrechen")
+        cancel_btn.setObjectName("secondary")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Speichern")
+        save_btn.clicked.connect(self.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
 
     def get_token(self):
         return self.token_input.text().strip()
@@ -2591,7 +2595,7 @@ class MainWindow(QMainWindow):
             QMenu::item:selected { background-color: #45475a; }
         """)
         tools_menu = menubar.addMenu("Tools")
-        settings_action = QAction("Einstellungen (Discogs Token)", self)
+        settings_action = QAction("Einstellungen", self)
         settings_action.triggered.connect(self._open_settings)
         tools_menu.addAction(settings_action)
 
