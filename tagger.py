@@ -943,8 +943,9 @@ class TrackMatchDialog(QDialog):
 
             self.match_table.setItem(i, 2, QTableWidgetItem(track.get('title', '')))
             pos = track.get('position', '')
-            if pos and numeric_display:
-                display_pos = str(i + 1)
+            if track and numeric_display:
+                width = len(str(total)) if total else 1
+                display_pos = str(i + 1).zfill(width)
             else:
                 display_pos = pos
             self.match_table.setItem(i, 3, QTableWidgetItem(f"{display_pos}/{total}" if display_pos else ''))
@@ -1039,6 +1040,13 @@ class TrackMatchDialog(QDialog):
             except Exception:
                 pass
 
+        numeric_display = False
+        parent = self.parent()
+        if parent and hasattr(parent, '_load_config'):
+            numeric_display = parent._load_config().get('numeric_track_display', False)
+        total_tracks = len(self._tracklist)
+        track_width = len(str(total_tracks)) if total_tracks else 1
+
         result = []
         for i in range(self.match_table.rowCount()):
             cb_item = self.match_table.item(i, 0)
@@ -1059,8 +1067,11 @@ class TrackMatchDialog(QDialog):
                 else:
                     td['title'] = raw_title
 
-            if self.cb_tracknr.isChecked() and track.get('position'):
-                td['tracknumber'] = f"{track['position']}/{len(self._tracklist)}"
+            if self.cb_tracknr.isChecked():
+                if numeric_display and track:
+                    td['tracknumber'] = f"{str(i + 1).zfill(track_width)}/{total_tracks}"
+                elif track.get('position'):
+                    td['tracknumber'] = f"{track['position']}/{total_tracks}"
 
             artist = self.artist_inp.text()
             if self.cb_artist.isChecked() and artist:
@@ -2179,9 +2190,9 @@ class SettingsDialog(QDialog):
         self.cb_numeric_track = QCheckBox("Tracknummer in Discogs-Suche immer numerisch anzeigen (1/n, 2/n, …)")
         self.cb_numeric_track.setChecked(numeric_track)
         self.cb_numeric_track.setToolTip(
-            "Zeigt im Track-Match-Dialog immer fortlaufend numerierte Tracknummern,\n"
-            "unabhängig davon was Discogs liefert (z.B. Vinyl-Seiten A1/B2).\n"
-            "Betrifft nur die Anzeige — beim Speichern wird wie gewohnt verfahren."
+            "Zeigt und speichert im Track-Match-Dialog immer fortlaufend numerierte\n"
+            "Tracknummern (z.B. 01/14 … 14/14), unabhängig davon was Discogs liefert\n"
+            "(z.B. Vinyl-Seiten A1/B2 statt echter Tracknummern)."
         )
         layout.addWidget(self.cb_numeric_track)
 
