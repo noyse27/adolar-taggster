@@ -1482,6 +1482,7 @@ class RenameDialog(QDialog):
         save_btn.setToolTip("Aktuelle Maske speichern")
         save_btn.setObjectName("secondary")
         save_btn.setFixedWidth(32)
+        save_btn.setStyleSheet("padding: 2px; font-size: 14px;")
         save_btn.clicked.connect(self._save_mask)
         mask_row.addWidget(save_btn)
 
@@ -1489,6 +1490,7 @@ class RenameDialog(QDialog):
         del_btn.setToolTip("Ausgewählte Maske löschen")
         del_btn.setObjectName("secondary")
         del_btn.setFixedWidth(32)
+        del_btn.setStyleSheet("padding: 2px; font-size: 14px;")
         del_btn.clicked.connect(self._delete_mask)
         mask_row.addWidget(del_btn)
 
@@ -2169,6 +2171,7 @@ class SettingsDialog(QDialog):
         self.toggle_token_btn = QPushButton("👁")
         self.toggle_token_btn.setObjectName("secondary")
         self.toggle_token_btn.setFixedWidth(32)
+        self.toggle_token_btn.setStyleSheet("padding: 2px; font-size: 14px;")
         self.toggle_token_btn.setCheckable(True)
         self.toggle_token_btn.setEnabled(bool(token))
         self.toggle_token_btn.toggled.connect(
