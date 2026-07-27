@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QHeaderView, QToolBar,
     QStatusBar, QFrame, QScrollArea, QMessageBox, QProgressBar,
     QGroupBox, QGridLayout, QSizePolicy, QAbstractItemView,
-    QMenu, QTextEdit, QStyledItemDelegate
+    QMenu, QTextEdit, QStyledItemDelegate, QFileDialog
 )
 from PyQt6.QtGui import QFileSystemModel
 from PyQt6.QtCore import (
@@ -1622,6 +1622,7 @@ class RenameDialog(QDialog):
         errors = []
         renamed = 0
         moved_folders = set()
+        moves = []  # undo snapshot: (old_path, new_path)
 
         # Step 1: create folder.jpg from first MP3 tag cover if none exists yet
         if self.files:
@@ -1646,26 +1647,251 @@ class RenameDialog(QDialog):
             try:
                 src.rename(dest)
                 renamed += 1
+                moves.append((str(src), str(dest)))
                 moved_folders.add((src.parent, dest.parent))
             except Exception as e:
                 errors.append(f"{src.name}: {e}")
 
         # Copy folder.jpg to each new destination folder
         import shutil
+        folder_jpg_created = []  # undo snapshot: folder.jpg paths newly created at destination
         for src_dir, dest_dir in moved_folders:
             if src_dir == dest_dir:
                 continue
             folder_jpg = src_dir / 'folder.jpg'
+            dest_folder_jpg = dest_dir / 'folder.jpg'
             if folder_jpg.exists():
+                existed_before = dest_folder_jpg.exists()
                 try:
-                    shutil.copy2(folder_jpg, dest_dir / 'folder.jpg')
+                    shutil.copy2(folder_jpg, dest_folder_jpg)
+                    if not existed_before:
+                        folder_jpg_created.append(str(dest_folder_jpg))
                 except Exception as e:
                     errors.append(f"folder.jpg → {dest_dir.name}: {e}")
+
+        if moves and parent and hasattr(parent, '_set_undo'):
+            parent._set_undo({
+                'type': 'rename',
+                'moves': moves,
+                'folder_jpg_created': folder_jpg_created,
+                'label': f"Umbenennen von {len(moves)} Datei(en) rückgängig machen",
+            })
+        if moves and parent and hasattr(parent, '_notify_adolar_renames'):
+            parent._notify_adolar_renames(moves)
 
         msg = f"{renamed} Datei(en) umbenannt/verschoben."
         if errors:
             msg += "\n\nFehler:\n" + "\n".join(errors)
         QMessageBox.information(self, "Umbenennen", msg)
+        self.accept()
+
+
+_MASK_PLACEHOLDER_RE = re.compile(r'%[1-6]')
+_MASK_FIELD_MAP = {'1': 'artist', '2': 'title', '3': 'album', '4': 'year', '5': 'genre', '6': 'tracknumber'}
+
+
+def _compile_mask_segment(seg):
+    """Turn one path-segment mask (e.g. '[%4]-%3') into a regex with named groups f1..f6.
+    All but the last placeholder in a segment match non-greedily; the last one is greedy
+    so it can absorb the same separator character if it occurs inside the actual value."""
+    placeholders = _MASK_PLACEHOLDER_RE.findall(seg)
+    literals = _MASK_PLACEHOLDER_RE.split(seg)
+    pattern = '^'
+    for i, lit in enumerate(literals):
+        pattern += re.escape(lit)
+        if i < len(placeholders):
+            digit = placeholders[i][1]
+            greedy = (i == len(placeholders) - 1)
+            pattern += f'(?P<f{digit}>.+)' if greedy else f'(?P<f{digit}>.+?)'
+    pattern += '$'
+    return re.compile(pattern)
+
+
+def parse_path_with_mask(path, mask):
+    """Reverse of the rename mask: extract %1-%6 field values from a file's path/name.
+    Returns a dict of only the non-empty matched fields (e.g. {'artist': ..., 'title': ...}),
+    or {} if the path doesn't match the mask's folder-depth/segment structure."""
+    segments = mask.split('\\')
+    if not segments:
+        return {}
+    regexes = [_compile_mask_segment(seg) for seg in segments]
+    p = Path(path)
+    folder_needed = segments[:-1]
+    if folder_needed:
+        parent_parts = p.parent.parts
+        if len(parent_parts) < len(folder_needed):
+            return {}
+        targets = list(parent_parts[-len(folder_needed):]) + [p.stem]
+    else:
+        targets = [p.stem]
+    extracted = {}
+    for regex, target in zip(regexes, targets):
+        m = regex.match(target)
+        if not m:
+            return {}
+        for key, val in m.groupdict().items():
+            if val:
+                extracted[_MASK_FIELD_MAP[key[1]]] = val.strip()
+    return extracted
+
+
+class FileToTagDialog(QDialog):
+    """Reverse of RenameDialog: parses tag values out of the file path/name using a mask."""
+    masks_changed = pyqtSignal(list)
+
+    FIELDS = [('Künstler', 'artist'), ('Titel', 'title'), ('Album', 'album'),
+              ('Jahr', 'year'), ('Genre', 'genre'), ('Track', 'tracknumber')]
+
+    def __init__(self, files, masks=None, last_mask='', parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Datei → Tag")
+        self.setMinimumSize(820, 520)
+        self.files = files  # [(path, tags), ...] — tags = current tags, used as undo snapshot
+        self._masks = masks or ["%1\\%3\\%6-%2", "%1\\[%4]-%3\\%6-%1-%2"]
+        self._last_mask = last_mask
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "%1=Künstler  %2=Titel  %3=Album  %4=Jahr  %5=Genre  %6=Track-Nr.  —  "
+            "liest Werte aus Pfad/Dateiname, z.B. %1\\[%4]-%3\\%6-%1-%2"
+        )
+        info.setStyleSheet("color: #6c7086; font-size: 11px;")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        mask_row = QHBoxLayout()
+        mask_row.addWidget(QLabel("Maske:"))
+        self.mask_input = QComboBox()
+        self.mask_input.setEditable(True)
+        self.mask_input.addItems(self._masks)
+        if self._last_mask and self._last_mask in self._masks:
+            self.mask_input.setCurrentText(self._last_mask)
+        elif self._masks:
+            self.mask_input.setCurrentText(self._masks[0])
+        self.mask_input.currentTextChanged.connect(self._update_preview)
+        mask_row.addWidget(self.mask_input, stretch=1)
+
+        save_btn = QPushButton("💾")
+        save_btn.setToolTip("Aktuelle Maske speichern")
+        save_btn.setObjectName("secondary")
+        save_btn.setFixedWidth(32)
+        save_btn.setStyleSheet("padding: 2px; font-size: 14px;")
+        save_btn.clicked.connect(self._save_mask)
+        mask_row.addWidget(save_btn)
+
+        del_btn = QPushButton("🗑")
+        del_btn.setToolTip("Ausgewählte Maske löschen")
+        del_btn.setObjectName("secondary")
+        del_btn.setFixedWidth(32)
+        del_btn.setStyleSheet("padding: 2px; font-size: 14px;")
+        del_btn.clicked.connect(self._delete_mask)
+        mask_row.addWidget(del_btn)
+
+        preview_btn = QPushButton("Vorschau")
+        preview_btn.setObjectName("secondary")
+        preview_btn.clicked.connect(self._update_preview)
+        mask_row.addWidget(preview_btn)
+        layout.addLayout(mask_row)
+
+        cols = ["Dateiname"] + [lbl for lbl, _ in self.FIELDS]
+        self.preview_table = QTableWidget(0, len(cols))
+        self.preview_table.setHorizontalHeaderLabels(cols)
+        hh = self.preview_table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for i in range(1, len(cols)):
+            hh.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+        self.preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.preview_table)
+
+        btn_layout = QHBoxLayout()
+        self.write_btn = QPushButton("Schreibe Tags")
+        self.write_btn.clicked.connect(self._write_tags)
+        cancel_btn = QPushButton("Schließen")
+        cancel_btn.setObjectName("secondary")
+        cancel_btn.clicked.connect(self.accept)
+        btn_layout.addStretch()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(self.write_btn)
+        layout.addLayout(btn_layout)
+
+        self._update_preview()
+
+    def _save_mask(self):
+        mask = self.mask_input.currentText().strip()
+        if not mask:
+            return
+        if mask not in self._masks:
+            self._masks.append(mask)
+            self.mask_input.addItem(mask)
+        self.masks_changed.emit(list(self._masks))
+
+    def _delete_mask(self):
+        idx = self.mask_input.currentIndex()
+        text = self.mask_input.currentText()
+        if text in self._masks:
+            self._masks.remove(text)
+        if idx >= 0:
+            self.mask_input.removeItem(idx)
+        self.masks_changed.emit(list(self._masks))
+
+    def _extract(self, path, mask):
+        try:
+            return parse_path_with_mask(path, mask)
+        except Exception:
+            return {}
+
+    def _update_preview(self):
+        mask = self.mask_input.currentText()
+        self.preview_table.setRowCount(len(self.files))
+        for i, (path, _tags) in enumerate(self.files):
+            extracted = self._extract(path, mask)
+            self.preview_table.setItem(i, 0, QTableWidgetItem(Path(path).name))
+            for col, (_, key) in enumerate(self.FIELDS, start=1):
+                val = extracted.get(key, '')
+                item = QTableWidgetItem(val)
+                if not val:
+                    item.setForeground(QColor('#45475a'))
+                self.preview_table.setItem(i, col, item)
+
+    def _write_tags(self):
+        mask = self.mask_input.currentText()
+        self.masks_changed.emit(list(self._masks))
+        parent = self.parent()
+        if parent and hasattr(parent, '_save_config'):
+            parent._save_config({'last_filetotag_mask': mask})
+
+        entries = []  # undo snapshot: (path, old_tags)
+        written = 0
+        errors = []
+        for path, old_tags in self.files:
+            extracted = self._extract(path, mask)
+            if not extracted:
+                continue
+            ok = write_mp3_tags(path, extracted)
+            if ok:
+                written += 1
+                entries.append((path, dict(old_tags)))
+            else:
+                errors.append(Path(path).name)
+
+        if entries and parent and hasattr(parent, '_set_undo'):
+            parent._set_undo({
+                'type': 'tag_write',
+                'entries': entries,
+                'label': f"Datei→Tag ({len(entries)} Datei(en)) rückgängig machen",
+            })
+
+        msg = f"{written} Datei(en) getaggt."
+        if not self.files:
+            msg = "Keine Dateien ausgewählt."
+        elif written == 0:
+            msg = "Keine Datei passte zur Maske — nichts geschrieben."
+        if errors:
+            msg += "\n\nFehler:\n" + "\n".join(errors)
+        QMessageBox.information(self, "Datei → Tag", msg)
         self.accept()
 
 
@@ -2155,6 +2381,260 @@ class BatchTagEditorDialog(QDialog):
         # else: dialog stays open
 
 
+class AdolarSyncHistoryDialog(QDialog):
+    """Shows the last N successful Adolar syncs (file/folder + date)."""
+
+    def __init__(self, history, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Letzte Adolar-Syncs")
+        self.setMinimumSize(560, 400)
+        layout = QVBoxLayout(self)
+
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["Datei/Ordner", "Datum"])
+        hh = table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setRowCount(len(history))
+        for i, entry in enumerate(history):
+            if entry.get('type') == 'rename':
+                label = f"{entry.get('old_path', '')} → {entry.get('new_path', '')}"
+            else:
+                label = entry.get('path', '')
+            table.setItem(i, 0, QTableWidgetItem(label))
+            table.setItem(i, 1, QTableWidgetItem(entry.get('timestamp', '')))
+        layout.addWidget(table)
+
+        if not history:
+            hint = QLabel("Noch keine erfolgreichen Syncs.")
+            hint.setStyleSheet("color:#6c7086; font-size:11px;")
+            layout.addWidget(hint)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("Schließen")
+        close_btn.setObjectName("secondary")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+
+class AdolarConfigDialog(QDialog):
+    """Connect Taggster to an Adolar instance: token auth, library pick, path mapping."""
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Adolar-Verbindung")
+        self.setMinimumWidth(480)
+        self._config = dict(config)
+        self._libraries = []
+        self._result = None
+        self._retry_used = False
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Adolar-URL:"))
+        self.url_input = QLineEdit(self._config.get('url', ''))
+        self.url_input.setPlaceholderText("http://192.168.1.10:5000")
+        layout.addWidget(self.url_input)
+
+        layout.addWidget(QLabel("API-Token:"))
+        token_row = QHBoxLayout()
+        self.token_input = QLineEdit(self._config.get('token', ''))
+        self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        token_row.addWidget(self.token_input, 1)
+        self.toggle_token_btn = QPushButton("👁")
+        self.toggle_token_btn.setObjectName("secondary")
+        self.toggle_token_btn.setFixedWidth(32)
+        self.toggle_token_btn.setStyleSheet("padding: 2px; font-size: 14px;")
+        self.toggle_token_btn.setCheckable(True)
+        self.toggle_token_btn.setEnabled(bool(self._config.get('token')))
+        self.toggle_token_btn.toggled.connect(
+            lambda checked: self.token_input.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
+        self.token_input.textChanged.connect(lambda t: self.toggle_token_btn.setEnabled(bool(t)))
+        token_row.addWidget(self.toggle_token_btn)
+        layout.addLayout(token_row)
+
+        hint = QLabel("Token erzeugen unter: Adolar → Einstellungen → Benutzerverwaltung → API-Zugriff")
+        hint.setStyleSheet("color:#a6adc8; font-size:11px;")
+        layout.addWidget(hint)
+
+        connect_row = QHBoxLayout()
+        connect_row.addStretch()
+        self.connect_btn = QPushButton("Verbinden")
+        self.connect_btn.setObjectName("secondary")
+        self.connect_btn.clicked.connect(self._connect)
+        connect_row.addWidget(self.connect_btn)
+        layout.addLayout(connect_row)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color:#a6adc8; font-size:11px;")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        layout.addWidget(QLabel("Bibliothek:"))
+        self.library_combo = QComboBox()
+        self.library_combo.setEnabled(False)
+        layout.addWidget(self.library_combo)
+        if self._config.get('library_id'):
+            self.library_combo.addItem(
+                self._config.get('library_name') or self._config['library_id'],
+                self._config['library_id']
+            )
+            self.library_combo.setEnabled(True)
+
+        path_row = QHBoxLayout()
+        path_row.addWidget(QLabel("Lokaler Pfad:"))
+        self.local_path_input = QLineEdit(self._config.get('local_path', ''))
+        path_row.addWidget(self.local_path_input, 1)
+        browse_btn = QPushButton("…")
+        browse_btn.setObjectName("secondary")
+        browse_btn.setFixedWidth(32)
+        browse_btn.clicked.connect(self._browse_local_path)
+        path_row.addWidget(browse_btn)
+        layout.addLayout(path_row)
+
+        sync_row = QHBoxLayout()
+        self.sync_btn = QPushButton("Sync")
+        self.sync_btn.setObjectName("secondary")
+        self.sync_btn.setEnabled(bool(self._config.get('sync_log')))
+        self.sync_btn.setToolTip("Ungesyncte Änderungen erneut an Adolar senden")
+        self.sync_btn.clicked.connect(self._do_sync)
+        sync_row.addWidget(self.sync_btn)
+        history_btn = QPushButton("Letzte Syncs")
+        history_btn.setObjectName("secondary")
+        history_btn.clicked.connect(self._show_history)
+        sync_row.addWidget(history_btn)
+        sync_row.addStretch()
+        layout.addLayout(sync_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Abbrechen")
+        cancel_btn.setObjectName("secondary")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Speichern")
+        save_btn.clicked.connect(self._save)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+    def _do_sync(self):
+        parent = self.parent()
+        if not (parent and hasattr(parent, '_sync_pending_adolar_changes')):
+            return
+        parent._sync_pending_adolar_changes()
+        if hasattr(parent, '_load_adolar_config'):
+            self._config = parent._load_adolar_config()
+        self.sync_btn.setEnabled(bool(self._config.get('sync_log')))
+
+    def _show_history(self):
+        parent = self.parent()
+        config = parent._load_adolar_config() if parent and hasattr(parent, '_load_adolar_config') else self._config
+        history = config.get('sync_history', [])
+        dlg = AdolarSyncHistoryDialog(history, parent=self)
+        dlg.exec()
+
+    def _browse_local_path(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Lokalen Bibliotheksordner wählen", self.local_path_input.text() or "")
+        if path:
+            self.local_path_input.setText(path)
+
+    def _connect(self):
+        url = self.url_input.text().strip().rstrip('/')
+        token = self.token_input.text().strip()
+        if not url or not token:
+            self.status_label.setText("URL und Token werden benötigt.")
+            return
+        self.connect_btn.setEnabled(False)
+        self.status_label.setText("Verbinde…")
+        QApplication.processEvents()
+        try:
+            r = requests.get(f"{url}/api/me", headers={'Authorization': f'Bearer {token}'}, timeout=5)
+        except requests.exceptions.RequestException as e:
+            self.connect_btn.setEnabled(True)
+            self.status_label.setText("Keine Verbindung möglich.")
+            QMessageBox.warning(self, "Adolar", f"Keine Verbindung zu {url} möglich.\n\n{e}")
+            return
+        self.connect_btn.setEnabled(True)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get('role') != 'admin':
+                self.status_label.setText("Angemeldet, aber kein Admin-Konto — Token benötigt Admin-Rechte.")
+                return
+            self._retry_used = False
+            self.status_label.setText(f"Verbunden als {data.get('username', '?')} (Admin).")
+            self._load_libraries(url, token)
+            return
+        if r.status_code in (401, 403):
+            if not self._retry_used:
+                self._retry_used = True
+                self.status_label.setText("Token ungültig oder abgelaufen.")
+                QMessageBox.warning(self, "Adolar",
+                                     "Token ungültig oder abgelaufen. Bitte erneut eingeben und verbinden.")
+                self.token_input.clear()
+                self.token_input.setFocus()
+            else:
+                self.status_label.setText("Zugangsdaten weiterhin ungültig.")
+                QMessageBox.critical(self, "Adolar",
+                                      "Zugangsdaten weiterhin ungültig. Bitte in den Einstellungen prüfen — "
+                                      "es wird kein weiterer Verbindungsversuch unternommen.")
+            return
+        self.status_label.setText(f"Unerwartete Antwort: HTTP {r.status_code}")
+
+    def _load_libraries(self, url, token):
+        try:
+            r = requests.get(f"{url}/api/admin/libraries",
+                              headers={'Authorization': f'Bearer {token}'}, timeout=5)
+        except requests.exceptions.RequestException as e:
+            self.status_label.setText(f"Verbunden, aber Bibliotheken konnten nicht geladen werden: {e}")
+            return
+        if r.status_code != 200:
+            self.status_label.setText(f"Bibliotheken konnten nicht geladen werden (HTTP {r.status_code}).")
+            return
+        data = r.json()
+        self._libraries = data.get('libraries', [])
+        self.library_combo.clear()
+        for lib in self._libraries:
+            self.library_combo.addItem(lib.get('name', lib['id']), lib['id'])
+        self.library_combo.setEnabled(bool(self._libraries))
+        target_id = self._config.get('library_id') or data.get('active_id')
+        if target_id:
+            idx = self.library_combo.findData(target_id)
+            if idx >= 0:
+                self.library_combo.setCurrentIndex(idx)
+
+    def _save(self):
+        url = self.url_input.text().strip().rstrip('/')
+        token = self.token_input.text().strip()
+        lib_id = self.library_combo.currentData()
+        lib_name = self.library_combo.currentText() if lib_id else ''
+        local_path = self.local_path_input.text().strip()
+        adolar_path = self._config.get('adolar_path', '')
+        for lib in self._libraries:
+            if lib['id'] == lib_id:
+                adolar_path = lib.get('music_path', '')
+                break
+        self._result = {
+            'url': url,
+            'token': token,
+            'library_id': lib_id or '',
+            'library_name': lib_name,
+            'adolar_path': adolar_path,
+            'local_path': local_path,
+            'sync_log': self._config.get('sync_log', []),
+        }
+        self.accept()
+
+    def get_config(self):
+        return self._result
+
+
 class SettingsDialog(QDialog):
     def __init__(self, token, numeric_track=False, parent=None):
         super().__init__(parent)
@@ -2532,6 +3012,10 @@ class MainWindow(QMainWindow):
         self._current_folder = None
         self._current_folder_jpg = None
         self._files = []  # list of (path, tags)
+        self._last_undo = None  # single-slot undo: {'type': 'rename'|'tag_write', ...}
+        self._adolar_active = False  # True once the Adolar bar has connected successfully
+        self._adolar_pending_folders = set()
+        self._adolar_debounce_timer = None
         self._discogs_token = self._load_token()
         self._build_ui()
         self._build_menu()
@@ -2549,6 +3033,23 @@ class MainWindow(QMainWindow):
     def _save_config(self, data):
         cfg = Path.home() / '.adolartaggster.json'
         existing = self._load_config()
+        existing.update(data)
+        cfg.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    def _load_adolar_config(self):
+        """Separate config file for Adolar connection settings — kept apart from
+        the general config since it holds a token and a per-instance sync log."""
+        cfg = Path.home() / '.adolartaggster-adolar.json'
+        if cfg.exists():
+            try:
+                return json.loads(cfg.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+        return {}
+
+    def _save_adolar_config(self, data):
+        cfg = Path.home() / '.adolartaggster-adolar.json'
+        existing = self._load_adolar_config()
         existing.update(data)
         cfg.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8')
 
@@ -2583,6 +3084,13 @@ class MainWindow(QMainWindow):
     def _save_masks(self, masks):
         self._save_config({'rename_masks': masks})
 
+    def _load_filetotag_masks(self):
+        default = ["%1\\%3\\%6-%2", "%1\\[%4]-%3\\%6-%1-%2"]
+        return self._load_config().get('filetotag_masks', default)
+
+    def _save_filetotag_masks(self, masks):
+        self._save_config({'filetotag_masks': masks})
+
     def _clear_last_folder(self):
         self._save_config({'last_folder': ''})
 
@@ -2598,6 +3106,10 @@ class MainWindow(QMainWindow):
         settings_action = QAction("Einstellungen", self)
         settings_action.triggered.connect(self._open_settings)
         tools_menu.addAction(settings_action)
+
+        adolar_config_action = QAction("Adolar-Verbindung…", self)
+        adolar_config_action.triggered.connect(self._open_adolar_config)
+        tools_menu.addAction(adolar_config_action)
 
         about_menu = menubar.addMenu("Über")
         about_action = QAction("Über Adolar Taggster", self)
@@ -2653,6 +3165,30 @@ class MainWindow(QMainWindow):
         self.quick_rename_btn.setStyleSheet(secondary_ss)
         self.quick_rename_btn.clicked.connect(self._quick_rename)
         self._update_quick_rename_tooltip()
+
+        self.filetotag_btn = QPushButton("🏷 Datei→Tag")
+        self.filetotag_btn.setEnabled(False)
+        self.filetotag_btn.setStyleSheet(secondary_ss)
+        self.filetotag_btn.setToolTip("Liest Tag-Werte aus Dateiname/Ordnerstruktur anhand einer Maske")
+        self.filetotag_btn.clicked.connect(self._open_filetotag)
+
+        self.quick_filetotag_btn = QPushButton("⚡")
+        self.quick_filetotag_btn.setEnabled(False)
+        self.quick_filetotag_btn.setFixedWidth(30)
+        self.quick_filetotag_btn.setStyleSheet(secondary_ss)
+        self.quick_filetotag_btn.clicked.connect(self._quick_filetotag)
+        self._update_quick_filetotag_tooltip()
+
+        self.undo_btn = QPushButton("↩ Rückgängig")
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.setStyleSheet(secondary_ss)
+        self.undo_btn.clicked.connect(self._undo_last_action)
+
+        self.adolar_sync_btn = QPushButton("🚀 Sync")
+        self.adolar_sync_btn.setVisible(False)
+        self.adolar_sync_btn.setStyleSheet(secondary_ss)
+        self.adolar_sync_btn.setToolTip("Ungesyncte Änderungen erneut an Adolar senden")
+        self.adolar_sync_btn.clicked.connect(self._sync_pending_adolar_changes)
 
         self.replace_rules_btn = QPushButton("X→Y")
         self.replace_rules_btn.setToolTip(
@@ -2715,6 +3251,8 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.discogs_btn)
         toolbar_layout.addWidget(self.rename_btn)
         toolbar_layout.addWidget(self.quick_rename_btn)
+        toolbar_layout.addWidget(self.filetotag_btn)
+        toolbar_layout.addWidget(self.quick_filetotag_btn)
         toolbar_layout.addWidget(self.replace_rules_btn)
         toolbar_layout.addWidget(self.autonumber_btn)
         toolbar_layout.addWidget(self.bpm_btn)
@@ -2727,6 +3265,9 @@ class MainWindow(QMainWindow):
         toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(self.cover_scan_btn)
         toolbar_layout.addWidget(self.cancel_scan_btn)
+        toolbar_layout.addSpacing(10)
+        toolbar_layout.addWidget(self.undo_btn)
+        toolbar_layout.addWidget(self.adolar_sync_btn)
         toolbar_layout.addStretch()
 
         self.folder_label = QLabel("Kein Ordner ausgewählt")
@@ -2748,6 +3289,13 @@ class MainWindow(QMainWindow):
         tree_label.setObjectName("heading")
         tree_layout.addWidget(tree_label)
 
+        # Adolar bar — only shown once an Adolar connection is configured
+        self._adolar_bar_container = QWidget()
+        self._adolar_bar_layout = QVBoxLayout(self._adolar_bar_container)
+        self._adolar_bar_layout.setContentsMargins(4, 4, 4, 2)
+        self._adolar_bar_layout.setSpacing(0)
+        tree_layout.addWidget(self._adolar_bar_container)
+
         # Quick-access panel (special folders + favorites) — rebuilt dynamically
         self._quick_container = QWidget()
         self._quick_container.setStyleSheet("background-color: #181825;")
@@ -2756,6 +3304,7 @@ class MainWindow(QMainWindow):
         self._quick_layout.setSpacing(1)
         tree_layout.addWidget(self._quick_container)
         self._rebuild_quick_access()
+        self._rebuild_adolar_bar()
 
         sep = QLabel()
         sep.setFixedHeight(1)
@@ -3004,6 +3553,225 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda checked, p=fav_path: self._navigate_tree(p))
             self._quick_layout.addWidget(btn)
 
+    def _rebuild_adolar_bar(self):
+        while self._adolar_bar_layout.count():
+            item = self._adolar_bar_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        config = self._load_adolar_config()
+        configured = bool(config.get('url') and config.get('token') and config.get('local_path'))
+        if hasattr(self, 'adolar_sync_btn'):
+            self.adolar_sync_btn.setVisible(configured and bool(config.get('sync_log')))
+        if not configured:
+            return
+
+        btn = QPushButton("🚀  ADOLAR")
+        font = QFont("Orbitron", 11)
+        font.setBold(True)
+        btn.setFont(font)
+        btn.setStyleSheet(
+            "QPushButton { text-align:left; background:#2a2140; color:#cba6f7;"
+            " border:1px solid #45475a; border-radius:5px; padding:6px 10px; }"
+            "QPushButton:hover { background:#3a2d5c; border-color:#cba6f7; }"
+        )
+        btn.setToolTip(f"{config.get('url', '')} — Bibliothek: {config.get('library_name') or config.get('library_id', '')}")
+        btn.clicked.connect(self._on_adolar_bar_clicked)
+        self._adolar_bar_layout.addWidget(btn)
+
+    def _on_adolar_bar_clicked(self):
+        config = self._load_adolar_config()
+        url = config.get('url', '')
+        token = config.get('token', '')
+        local_path = config.get('local_path', '')
+        if not (url and token and local_path):
+            return
+        try:
+            r = requests.get(f"{url}/api/me", headers={'Authorization': f'Bearer {token}'}, timeout=5)
+        except requests.exceptions.RequestException as e:
+            QMessageBox.warning(self, "Adolar", f"Keine Verbindung zu {url} möglich.\n\n{e}")
+            self._adolar_active = False
+            return
+
+        if r.status_code == 200 and r.json().get('role') == 'admin':
+            self._adolar_active = True
+            self.status_bar.showMessage(f"Adolar verbunden — {config.get('library_name', '')}")
+        elif r.status_code in (401, 403):
+            QMessageBox.warning(self, "Adolar",
+                                 "Token ungültig oder abgelaufen. Bitte über Tools → Adolar-Verbindung prüfen.")
+            self._adolar_active = False
+            return
+        else:
+            QMessageBox.warning(self, "Adolar", f"Unerwartete Antwort von Adolar (HTTP {r.status_code}).")
+            self._adolar_active = False
+            return
+
+        sync_log = config.get('sync_log', [])
+        if sync_log:
+            reply = QMessageBox.question(
+                self, "Adolar",
+                f"Es gibt {len(sync_log)} ungesyncte Änderung(en). Jetzt syncen?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Discard,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._sync_pending_adolar_changes()
+            elif reply == QMessageBox.StandardButton.Discard:
+                self._save_adolar_config({'sync_log': []})
+                self._rebuild_adolar_bar()
+
+        if Path(local_path).is_dir():
+            self._navigate_tree(local_path)
+
+    def _translate_to_adolar_path(self, local_path):
+        """Map a local filesystem path to the corresponding path on the Adolar
+        side, using the local_path/adolar_path prefix pair from the config.
+        Adolar paths are POSIX-style (server-side), so the mapped remainder
+        uses forward slashes regardless of the local OS."""
+        config = self._load_adolar_config()
+        local_root = config.get('local_path', '')
+        adolar_root = config.get('adolar_path', '')
+        if not local_root or not adolar_root:
+            return None
+        local_path_norm = str(Path(local_path))
+        local_root_norm = str(Path(local_root))
+        if not local_path_norm.lower().startswith(local_root_norm.lower()):
+            return None
+        rel = local_path_norm[len(local_root_norm):].lstrip('\\/').replace('\\', '/')
+        adolar_root_clean = adolar_root.rstrip('/')
+        return f"{adolar_root_clean}/{rel}" if rel else adolar_root_clean
+
+    def _notify_adolar_rescan(self, folder_path):
+        """Queue a folder for a debounced rescan trigger — coalesces rapid
+        successive edits into a single request per folder instead of firing
+        one request per file write."""
+        if not self._adolar_active or not folder_path:
+            return
+        self._adolar_pending_folders.add(folder_path)
+        if self._adolar_debounce_timer is None:
+            self._adolar_debounce_timer = QTimer(self)
+            self._adolar_debounce_timer.setSingleShot(True)
+            self._adolar_debounce_timer.timeout.connect(self._flush_adolar_rescan)
+        self._adolar_debounce_timer.start(2500)
+
+    def _flush_adolar_rescan(self):
+        folders = list(self._adolar_pending_folders)
+        self._adolar_pending_folders.clear()
+        config = self._load_adolar_config()
+        url = config.get('url', '')
+        token = config.get('token', '')
+        if not (url and token):
+            return
+        for folder in folders:
+            adolar_path = self._translate_to_adolar_path(folder)
+            if not adolar_path:
+                continue
+            try:
+                r = requests.post(
+                    f"{url}/api/scan/start",
+                    headers={'Authorization': f'Bearer {token}'},
+                    json={'path': adolar_path}, timeout=5,
+                )
+                if r.status_code == 200:
+                    self._log_adolar_sync_success('rescan', {'path': adolar_path})
+                else:
+                    self._log_adolar_sync_failure('rescan', {'path': adolar_path, 'status': r.status_code})
+            except requests.exceptions.RequestException:
+                self._log_adolar_sync_failure('rescan', {'path': adolar_path})
+
+    def _notify_adolar_renames(self, moves):
+        """moves: list of (old_local_path, new_local_path) — called right after
+        a successful rename/move so Adolar's DB stays in sync."""
+        if not self._adolar_active or not moves:
+            return
+        config = self._load_adolar_config()
+        url = config.get('url', '')
+        token = config.get('token', '')
+        library_id = config.get('library_id', '')
+        if not (url and token and library_id):
+            return
+        for old_local, new_local in moves:
+            old_adolar = self._translate_to_adolar_path(old_local)
+            new_adolar = self._translate_to_adolar_path(new_local)
+            if not old_adolar or not new_adolar:
+                continue
+            try:
+                r = requests.post(
+                    f"{url}/api/admin/libraries/{library_id}/rename-path",
+                    headers={'Authorization': f'Bearer {token}'},
+                    json={'old_path': old_adolar, 'new_path': new_adolar}, timeout=5,
+                )
+                if r.status_code == 200:
+                    self._log_adolar_sync_success('rename', {'old_path': old_adolar, 'new_path': new_adolar})
+                else:
+                    self._log_adolar_sync_failure(
+                        'rename', {'old_path': old_adolar, 'new_path': new_adolar, 'status': r.status_code})
+            except requests.exceptions.RequestException:
+                self._log_adolar_sync_failure('rename', {'old_path': old_adolar, 'new_path': new_adolar})
+
+    def _log_adolar_sync_failure(self, kind, data):
+        config = self._load_adolar_config()
+        log = config.get('sync_log', [])
+        entry = {'type': kind, 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'), **data}
+        log.append(entry)
+        self._save_adolar_config({'sync_log': log})
+        self._rebuild_adolar_bar()
+
+    def _log_adolar_sync_success(self, kind, data):
+        """Keep the last 20 successful syncs (newest first) for the
+        'Letzte Syncs' view in AdolarConfigDialog."""
+        config = self._load_adolar_config()
+        history = config.get('sync_history', [])
+        entry = {'type': kind, 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'), **data}
+        history.insert(0, entry)
+        self._save_adolar_config({'sync_history': history[:20]})
+
+    def _sync_pending_adolar_changes(self):
+        config = self._load_adolar_config()
+        url = config.get('url', '')
+        token = config.get('token', '')
+        library_id = config.get('library_id', '')
+        log = config.get('sync_log', [])
+        if not (url and token):
+            self.status_bar.showMessage("Adolar nicht konfiguriert.")
+            return
+        if not log:
+            self.status_bar.showMessage("Keine ungesyncten Änderungen.")
+            return
+        remaining = []
+        synced = 0
+        for entry in log:
+            try:
+                if entry.get('type') == 'rescan':
+                    r = requests.post(
+                        f"{url}/api/scan/start",
+                        headers={'Authorization': f'Bearer {token}'},
+                        json={'path': entry.get('path')}, timeout=5,
+                    )
+                elif entry.get('type') == 'rename' and library_id:
+                    r = requests.post(
+                        f"{url}/api/admin/libraries/{library_id}/rename-path",
+                        headers={'Authorization': f'Bearer {token}'},
+                        json={'old_path': entry.get('old_path'), 'new_path': entry.get('new_path')},
+                        timeout=5,
+                    )
+                else:
+                    remaining.append(entry)
+                    continue
+                if r.status_code == 200:
+                    synced += 1
+                    if entry.get('type') == 'rescan':
+                        self._log_adolar_sync_success('rescan', {'path': entry.get('path')})
+                    else:
+                        self._log_adolar_sync_success(
+                            'rename', {'old_path': entry.get('old_path'), 'new_path': entry.get('new_path')})
+                else:
+                    remaining.append(entry)
+            except requests.exceptions.RequestException:
+                remaining.append(entry)
+        self._save_adolar_config({'sync_log': remaining})
+        self._rebuild_adolar_bar()
+        self.status_bar.showMessage(f"{synced} Änderung(en) synchronisiert, {len(remaining)} weiterhin offen.")
+
     def _load_favorites(self):
         return self._load_config().get('favorites', [])
 
@@ -3115,6 +3883,8 @@ class MainWindow(QMainWindow):
         self.discogs_btn.setEnabled(False)
         self.rename_btn.setEnabled(False)
         self.quick_rename_btn.setEnabled(False)
+        self.filetotag_btn.setEnabled(False)
+        self.quick_filetotag_btn.setEnabled(False)
         self.autonumber_btn.setEnabled(False)
         self.bpm_btn.setEnabled(False)
 
@@ -3216,6 +3986,7 @@ class MainWindow(QMainWindow):
         """Reload current folder but restore the previous selection afterwards."""
         if not self._current_folder:
             return
+        self._notify_adolar_rescan(self._current_folder)
         prev = self._get_selected_paths()
         self._load_folder(self._current_folder)
         if prev:
@@ -3245,6 +4016,8 @@ class MainWindow(QMainWindow):
         self.discogs_btn.setEnabled(has_sel)
         self.rename_btn.setEnabled(has_sel)
         self.quick_rename_btn.setEnabled(has_sel)
+        self.filetotag_btn.setEnabled(has_sel)
+        self.quick_filetotag_btn.setEnabled(has_sel)
         self.autonumber_btn.setEnabled(has_sel)
         self.bpm_btn.setEnabled(has_sel)
         self.move_up_btn.setEnabled(selected == 1)
@@ -3506,6 +4279,81 @@ class MainWindow(QMainWindow):
         if self._current_folder:
             self._reload_keep_selection()
 
+    def _open_filetotag(self):
+        selected = self._get_selected_files()
+        if not selected:
+            return
+        fresh = [(path, load_mp3_tags(path)) for path, _ in selected]
+        masks = self._load_filetotag_masks()
+        last_mask = self._load_config().get('last_filetotag_mask', '')
+        dlg = FileToTagDialog(fresh, masks=masks, last_mask=last_mask, parent=self)
+        dlg.masks_changed.connect(self._save_filetotag_masks)
+        dlg.exec()
+        if self._current_folder:
+            self._reload_keep_selection()
+
+    def _update_quick_filetotag_tooltip(self):
+        mask = self._load_config().get('last_filetotag_mask', '')
+        if not mask:
+            masks = self._load_filetotag_masks()
+            mask = masks[0] if masks else ''
+        self.quick_filetotag_btn.setToolTip(f"Schnell Datei→Tag\nMaske: {mask}")
+
+    def _quick_filetotag(self):
+        """Extract tags from filename/path for selected files using the last saved mask."""
+        selected = self._get_selected_files()
+        if not selected:
+            return
+        mask = self._load_config().get('last_filetotag_mask', '')
+        if not mask:
+            masks = self._load_filetotag_masks()
+            mask = masks[0] if masks else '%6-%2'
+        fresh = [(p, load_mp3_tags(p)) for p, _ in selected]
+        dlg = FileToTagDialog(fresh, masks=self._load_filetotag_masks(),
+                              last_mask=mask, parent=self)
+        dlg.mask_input.setCurrentText(mask)
+        dlg._write_tags()
+        if self._current_folder:
+            self._reload_keep_selection()
+
+    def _set_undo(self, undo_info):
+        self._last_undo = undo_info
+        self.undo_btn.setEnabled(True)
+        self.undo_btn.setToolTip(undo_info.get('label', 'Rückgängig machen'))
+
+    def _undo_last_action(self):
+        undo = self._last_undo
+        if not undo:
+            return
+        errors = []
+        if undo['type'] == 'tag_write':
+            for path, old_tags in undo['entries']:
+                ok = write_mp3_tags(path, old_tags)
+                if not ok:
+                    errors.append(Path(path).name)
+        elif undo['type'] == 'rename':
+            for old_path, new_path in reversed(undo['moves']):
+                try:
+                    Path(new_path).rename(old_path)
+                except Exception as e:
+                    errors.append(f"{Path(new_path).name}: {e}")
+            for fj in undo.get('folder_jpg_created', []):
+                try:
+                    Path(fj).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        self._last_undo = None
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.setToolTip('')
+
+        msg = "Rückgängig gemacht."
+        if errors:
+            msg += f"  {len(errors)} Fehler: " + ", ".join(errors)
+        self.status_bar.showMessage(msg)
+        if self._current_folder:
+            self._reload_keep_selection()
+
     def _open_replace_rules(self):
         rules = self._load_config().get('rename_replacements', [])
         dlg = ReplaceRulesDialog(rules, parent=self)
@@ -3659,7 +4507,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         for text, style in [
-            ("Version: 1.7", "color: #a6adc8; font-size: 12px;"),
+            ("Version: 2.0", "color: #a6adc8; font-size: 12px;"),
             ("© PolzeSoft 2026", "color: #6c7086; font-size: 12px;"),
         ]:
             lbl = QLabel(text)
@@ -3696,6 +4544,16 @@ class MainWindow(QMainWindow):
             self._discogs_token = dlg.get_token()
             self._save_token(self._discogs_token)
             self._save_config({'numeric_track_display': dlg.get_numeric_track()})
+
+    def _open_adolar_config(self):
+        config = self._load_adolar_config()
+        dlg = AdolarConfigDialog(config, parent=self)
+        if dlg.exec():
+            new_config = dlg.get_config()
+            if new_config:
+                self._save_adolar_config(new_config)
+            if hasattr(self, '_rebuild_adolar_bar'):
+                self._rebuild_adolar_bar()
 
 
 def _make_icon():

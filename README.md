@@ -4,7 +4,7 @@
 
 A modern MP3 tagger with Discogs integration — built as a replacement for Tag&Rename, fixing its UTF-8/special character encoding bug when fetching metadata from Discogs.
 
-![Version](https://img.shields.io/badge/version-1.7-blue)
+![Version](https://img.shields.io/badge/version-2.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt6](https://img.shields.io/badge/PyQt6-6.6%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -89,6 +89,22 @@ A modern MP3 tagger with Discogs integration — built as a replacement for Tag&
 - Cancel button (✕) visible during scan
 - Scan ID mechanism — stale results from cancelled scans are discarded
 
+### File → Tag
+- Reverse of Rename: extracts Artist/Title/Album/Year/Genre/Track-Nr. from the file path/name using the same `%1`–`%6` mask syntax
+- Preview table shows detected values per file before writing
+- ⚡ quick-apply button for the last-used mask
+
+### Undo
+- Single-slot undo for the last Rename or File → Tag batch operation
+- Restores previous tag values, or moves renamed files back (including cleanup of any `folder.jpg` newly copied to the destination)
+
+### Adolar Integration
+- Connect to a running [Adolar](https://github.com/noyse27) music library instance via admin API token
+- Pick a library, map its path to a local folder
+- Every tag/cover write or rename in Taggster automatically triggers a scoped rescan (or path-rename notice) in Adolar — debounced, so rapid edits don't spam the server
+- Adolar bar above the favorites list — one click jumps to the mapped library folder
+- Failed sync attempts are logged and retryable via the Sync button; last 20 successful syncs viewable in "Letzte Syncs"
+
 ---
 
 ## Installation
@@ -134,7 +150,13 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### v1.7 (current)
+### v2.0 (current)
+- **File → Tag**: reverse of Rename — extracts tags from file path/name using the same mask syntax, with preview and quick-apply
+- **Undo**: single-slot undo for the last Rename or File → Tag batch (restores tags, or moves files back + cleans up any newly-copied folder.jpg)
+- **Adolar Integration**: connect Taggster to a running Adolar instance (admin API token), map a library to a local folder, and every write/rename automatically triggers a scoped, debounced sync — with a dedicated Adolar bar, sync log/retry, and sync history
+- Discogs/Rename toolbar buttons reorganized to make room for the new File → Tag controls
+
+### v1.7
 - Cover Quality Scanner: save/load scan results (no rescan needed for large folders), explicit "Scannen" button instead of auto-scan on open
 - New toolbar button "X→Y": table-based find/replace rules applied to generated filenames during rename, with per-row delete
 - Settings dialog: Discogs token masked with reveal toggle; new "numeric track display" option normalizes Vinyl/Cassette-style positions (A1/B1) to sequential zero-padded numbers (01/14...14/14), both displayed and saved
