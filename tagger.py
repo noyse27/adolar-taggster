@@ -512,18 +512,28 @@ class DiscogsSearchThread(QThread):
                            if all(w in r['title'].lower() for w in words)]
 
             # Expand each master into one row per available medium (Vinyl, CD, Cassette, ...)
-            # so the user can pick the right one instead of getting a random main release
+            # so the user can pick the right one instead of getting a random main release.
+            # _expand_master returns: a non-empty list (expanded rows), None (keep the
+            # original master row as-is), or [] (drop it — a stale/deleted master that
+            # would otherwise 404 when clicked).
             expanded = []
             for r in results:
                 variants = self._expand_master(r, headers) if r['is_master'] else None
-                expanded.extend(variants if variants else [r])
+                if variants is None:
+                    expanded.append(r)
+                else:
+                    expanded.extend(variants)
 
             self.results_ready.emit(expanded)
         except Exception as e:
             self.error.emit(str(e))
 
     def _expand_master(self, r, headers):
-        """Fetch a master's versions and return one representative row per medium."""
+        """Fetch a master's versions and return one representative row per medium.
+        Returns None to keep the original master row unchanged, or [] to drop it
+        entirely (the master resource itself no longer resolves — some deleted/
+        merged masters still return HTTP 200 with an empty versions list here,
+        which would otherwise leave an unusable, 404-on-click entry in results)."""
         try:
             resp = requests.get(
                 f"https://api.discogs.com/masters/{r['id']}/versions",
@@ -533,6 +543,15 @@ class DiscogsSearchThread(QThread):
                 return None
             versions = resp.json().get('versions', [])
             if not versions:
+                try:
+                    check = requests.get(
+                        f"https://api.discogs.com/masters/{r['id']}",
+                        headers=headers, timeout=10
+                    )
+                    if check.status_code == 404:
+                        return []
+                except requests.exceptions.RequestException:
+                    pass
                 return None
             by_medium = {}
             for v in versions:
@@ -4276,6 +4295,7 @@ class MainWindow(QMainWindow):
         dlg = RenameDialog(fresh, masks=masks, last_mask=last_mask, parent=self)
         dlg.masks_changed.connect(self._save_masks)
         dlg.exec()
+        self._update_quick_rename_tooltip()
         if self._current_folder:
             self._reload_keep_selection()
 
@@ -4289,6 +4309,7 @@ class MainWindow(QMainWindow):
         dlg = FileToTagDialog(fresh, masks=masks, last_mask=last_mask, parent=self)
         dlg.masks_changed.connect(self._save_filetotag_masks)
         dlg.exec()
+        self._update_quick_filetotag_tooltip()
         if self._current_folder:
             self._reload_keep_selection()
 
@@ -4313,6 +4334,7 @@ class MainWindow(QMainWindow):
                               last_mask=mask, parent=self)
         dlg.mask_input.setCurrentText(mask)
         dlg._write_tags()
+        self._update_quick_filetotag_tooltip()
         if self._current_folder:
             self._reload_keep_selection()
 
@@ -4417,6 +4439,7 @@ class MainWindow(QMainWindow):
                            last_mask=mask, parent=self)
         dlg.mask_input.setCurrentText(mask)
         dlg._do_rename()
+        self._update_quick_rename_tooltip()
         # Reload — files may have moved to a different folder
         if self._current_folder:
             self._reload_keep_selection()
