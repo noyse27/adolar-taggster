@@ -4,7 +4,7 @@
 
 A modern MP3 tagger with Discogs integration — built as a replacement for Tag&Rename, fixing its UTF-8/special character encoding bug when fetching metadata from Discogs.
 
-![Version](https://img.shields.io/badge/version-2.0-blue)
+![Version](https://img.shields.io/badge/version-2.1-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt6](https://img.shields.io/badge/PyQt6-6.6%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -71,6 +71,7 @@ A modern MP3 tagger with Discogs integration — built as a replacement for Tag&
 - Correct UTF-8 encoding via mutagen (fixes the Ö/Ü/Ä and Cyrillic bug in Tag&Rename)
 - Corrupt APIC frames fully replaced, not stacked
 - **Album Artist (TPE2)** always written alongside Artist
+- **Original-Jahr (TDOR)** editable separately from Jahr (TDRC) for compilations whose release year differs from the songs' original year
 - Cover resized to max 600×600 px via Pillow
 - `folder.jpg` written to album folder alongside tags
 
@@ -154,11 +155,14 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### Unreleased
-- Optional per-user Windows Explorer context-menu integration, configurable in Settings without an installer or administrator rights
-- Single-instance folder forwarding: Explorer opens the selected folder in the running Taggster window and starts the MP3 scan immediately
+### v2.1 (current)
+- Optional per-user Windows Explorer context-menu integration ("Mit Adolar Taggster öffnen"), configurable in Settings without an installer or administrator rights
+- Single-instance folder forwarding: Explorer opens the selected folder in the running Taggster window and starts the MP3 scan immediately instead of opening a duplicate window
+- New **Original-Jahr (TDOR)** field in the single-file and batch tag editors, plus an optional table column — distinguishes a compilation's release year from the original song's year (e.g. "Now Yearbook '91" released 2025, songs from 1991); prep work for the in-progress Adolar Songster year-guessing feature
+- Discogs: master search results whose master resource itself no longer resolves (deleted/merged, but still indexed) are now dropped instead of left as a clickable-but-broken gold entry
+- Quick-Umbenennen/Quick-Datei→Tag tooltips now refresh after each use instead of only reflecting the mask from app startup
 
-### v2.0 (current)
+### v2.0
 - **File → Tag**: reverse of Rename — extracts tags from file path/name using the same mask syntax, with preview and quick-apply
 - **Undo**: single-slot undo for the last Rename or File → Tag batch (restores tags, or moves files back + cleans up any newly-copied folder.jpg)
 - **Adolar Integration**: connect Taggster to a running Adolar instance (admin API token), map a library to a local folder, and every write/rename automatically triggers a scoped, debounced sync — with a dedicated Adolar bar, sync log/retry, and sync history

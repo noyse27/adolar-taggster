@@ -215,7 +215,7 @@
 <main>
 
 <h1>Adolar Taggster</h1>
-<p style="color:var(--muted); font-size:14px; margin-bottom:24px;">Version 2.0 · © PolzeSoft 2026 · <a href="https://polze.net">polze.net</a> · <a href="mailto:adolartaggster@polze.net">adolartaggster@polze.net</a></p>
+<p style="color:var(--muted); font-size:14px; margin-bottom:24px;">Version 2.1 · © PolzeSoft 2026 · <a href="https://polze.net">polze.net</a> · <a href="mailto:adolartaggster@polze.net">adolartaggster@polze.net</a></p>
 
 <div class="hero">
   <p>Adolar Taggster ist ein moderner MP3-Tagger mit Discogs-Integration für Windows. Tags werden korrekt in UTF-8 geschrieben — Umlaute, kyrillische und sonstige Sonderzeichen bleiben erhalten.</p>
@@ -229,6 +229,9 @@
 <h3>Aus dem Quellcode</h3>
 <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:13px;color:var(--green);overflow:auto;">pip install PyQt6 mutagen requests Pillow librosa send2trash
 python tagger.py</pre>
+
+<h3>Windows Explorer Integration</h3>
+<p>Unter <strong>Tools → Einstellungen → Windows Explorer</strong> lässt sich optional ein Rechtsklick-Eintrag <em>„Mit Adolar Taggster öffnen“</em> für Ordner hinzufügen (kein Installer, keine Admin-Rechte nötig). Auf Windows 11 erscheint er ggf. unter „Weitere Optionen anzeigen“. Öffnet Taggster bereits eine Instanz, wird der gewählte Ordner an das offene Fenster weitergereicht statt eine zweite Instanz zu starten.</p>
 
 <div class="warn"><strong>Hinweis:</strong> Für die Discogs-Suche empfiehlt sich ein persönlicher API-Token (60 Anfragen/Min statt 25). Token erstellen unter <em>discogs.com → Einstellungen → Entwickler</em>, dann unter <strong>Tools → Einstellungen</strong> eintragen.</div>
 
@@ -340,6 +343,9 @@ python tagger.py</pre>
 
 <h3>Mehrere Dateien (Batch)</h3>
 <p>Mehrere Dateien markieren und dann rechtsklicken → <em>Tag bearbeiten</em>. Alle Felder zeigen den Platzhalter <span class="badge">&lt;beibehalten&gt;</span>. Nur ausgefüllte Felder werden geschrieben. Vor dem Speichern erscheint eine Bestätigung mit einer Übersicht aller Änderungen.</p>
+
+<h3>Original-Jahr (TDOR)</h3>
+<p>Zusätzlich zu <strong>Jahr</strong> (TDRC) gibt es das Feld <strong>Original-Jahr</strong> (TDOR) — für Fälle, in denen das Erscheinungsjahr der Edition vom Erscheinungsjahr des Original-Songs abweicht, z.B. bei Compilations wie „Now Yearbook '91“ (Compilation von 2025, Songs von 1991). In beiden Editoren editierbar; im Batch-Editor lässt sich so das Original-Jahr für alle markierten Tracks einer Compilation auf einmal setzen. Auch als optionale (standardmäßig ausgeblendete) Tabellenspalte verfügbar. Discogs befüllt weiterhin nur TDRC — TDOR ist für manuelle Nachpflege gedacht.</p>
 
 <!-- Umbenennen -->
 <h2 id="umbenennen">Umbenennen</h2>
@@ -474,7 +480,7 @@ python tagger.py</pre>
 </div>
 
 <footer>
-  Adolar Taggster v2.0 · © PolzeSoft 2026 · <a href="https://polze.net">polze.net</a> · <a href="mailto:adolartaggster@polze.net">adolartaggster@polze.net</a> ·
+  Adolar Taggster v2.1 · © PolzeSoft 2026 · <a href="https://polze.net">polze.net</a> · <a href="mailto:adolartaggster@polze.net">adolartaggster@polze.net</a> ·
   <a href="https://github.com/noyse27/adolar-taggster">GitHub</a> ·
   <a href="https://buymeacoffee.com/noyse27">Buy Me a Coffee</a>
 </footer>
