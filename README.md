@@ -33,6 +33,8 @@ A modern MP3 tagger with Discogs integration — built as a replacement for Tag&
 ### Explorer & File List
 - Special folder shortcuts (Musik, Downloads, Desktop, Dokumente, Videos) above the tree
 - Full folder tree — single click expands, double click scans MP3s
+- Optional Windows Explorer context-menu entry: right-click a folder → **Mit Adolar Taggster öffnen**
+- Explorer launches are forwarded to the existing Taggster window and immediately load the selected folder's MP3s
 - Files sorted by album → track number (natural sort)
 - Cover column (♪) indicates embedded covers; click a file to preview its cover
 - Dual cover panel: **folder.jpg** left, **tag cover** right
@@ -116,6 +118,8 @@ python tagger.py
 
 Or download `AdolarTaggster.exe` from [Releases](https://github.com/noyse27/adolar-taggster/releases) — no Python required.
 
+The optional Explorer entry can be enabled or removed under **Tools → Einstellungen → Windows Explorer**. On Windows 11 it may appear under **Weitere Optionen anzeigen**.
+
 ## Discogs API Token
 
 1. Go to [discogs.com → Settings → Developers](https://www.discogs.com/settings/developers)
@@ -149,6 +153,10 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 - Pillow >= 10.0
 
 ## Changelog
+
+### Unreleased
+- Optional per-user Windows Explorer context-menu integration, configurable in Settings without an installer or administrator rights
+- Single-instance folder forwarding: Explorer opens the selected folder in the running Taggster window and starts the MP3 scan immediately
 
 ### v2.0 (current)
 - **File → Tag**: reverse of Rename — extracts tags from file path/name using the same mask syntax, with preview and quick-apply
