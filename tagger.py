@@ -6,6 +6,8 @@ import sys
 import os
 import re
 import json
+import getpass
+import hashlib
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -23,8 +25,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFileSystemModel
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QSize, QDir, QSortFilterProxyModel,
-    QModelIndex, QTimer, QStandardPaths
+    QModelIndex, QTimer, QStandardPaths, QObject
 )
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtGui import (
     QIcon, QPixmap, QImage, QAction, QFont, QColor, QPalette
 )
@@ -37,6 +40,147 @@ from mutagen.id3 import (
 )
 from mutagen.id3._util import ID3NoHeaderError
 from PIL import Image
+
+
+APP_NAME = "Adolar Taggster"
+EXPLORER_VERB_KEY = r"Software\Classes\Directory\shell\AdolarTaggster"
+
+
+def _launch_command():
+    """Command registered with Explorer for the current app location."""
+    if getattr(sys, 'frozen', False):
+        launcher = f'"{Path(sys.executable).resolve()}"'
+    else:
+        launcher = f'"{Path(sys.executable).resolve()}" "{Path(__file__).resolve()}"'
+    return f'{launcher} --folder "%1"'
+
+
+def _shell_icon_path():
+    """Create a stable icon file for Explorer's context menu."""
+    base = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'AdolarTaggster'
+    icon_path = base / 'AdolarTaggster.ico'
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        _create_icon_image(256).save(
+            icon_path, format='ICO', sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (256, 256)])
+        return str(icon_path)
+    except Exception:
+        # Explorer can still extract the embedded/default icon from the EXE.
+        return f'{Path(sys.executable).resolve()},0'
+
+
+def _explorer_integration_status():
+    """Return 'installed', 'outdated', 'missing', or 'unsupported'."""
+    if sys.platform != 'win32':
+        return 'unsupported'
+    try:
+        import winreg
+        command_key = EXPLORER_VERB_KEY + r'\command'
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, command_key) as key:
+            command, _ = winreg.QueryValueEx(key, '')
+        return 'installed' if command == _launch_command() else 'outdated'
+    except FileNotFoundError:
+        return 'missing'
+    except OSError:
+        return 'missing'
+
+
+def _install_explorer_integration():
+    if sys.platform != 'win32':
+        raise OSError("Die Explorer-Integration ist nur unter Windows verfügbar.")
+    import winreg
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, EXPLORER_VERB_KEY) as key:
+        winreg.SetValueEx(key, '', 0, winreg.REG_SZ, 'Mit Adolar Taggster öffnen')
+        winreg.SetValueEx(key, 'MUIVerb', 0, winreg.REG_SZ, 'Mit Adolar Taggster öffnen')
+        winreg.SetValueEx(key, 'Icon', 0, winreg.REG_SZ, _shell_icon_path())
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, EXPLORER_VERB_KEY + r'\command') as key:
+        winreg.SetValueEx(key, '', 0, winreg.REG_SZ, _launch_command())
+
+
+def _remove_explorer_integration():
+    if sys.platform != 'win32':
+        raise OSError("Die Explorer-Integration ist nur unter Windows verfügbar.")
+    import winreg
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, EXPLORER_VERB_KEY + r'\command')
+    except FileNotFoundError:
+        pass
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, EXPLORER_VERB_KEY)
+    except FileNotFoundError:
+        pass
+
+
+def _single_instance_name():
+    """Use a stable per-user pipe name so different Windows users don't clash."""
+    identity = f'{getpass.getuser()}|{Path.home()}'.encode('utf-8', errors='replace')
+    suffix = hashlib.sha256(identity).hexdigest()[:16]
+    return f'AdolarTaggster-{suffix}'
+
+
+def _folder_from_arguments(arguments):
+    try:
+        index = arguments.index('--folder')
+    except ValueError:
+        return None
+    if index + 1 >= len(arguments):
+        return None
+    value = arguments[index + 1].strip().strip('"')
+    return os.path.normpath(value) if value else None
+
+
+class SingleInstanceController(QObject):
+    """Forward launch requests to the already running Taggster window."""
+    message_received = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.server_name = _single_instance_name()
+        self.server = QLocalServer(self)
+        self.server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+        self.server.newConnection.connect(self._accept_connections)
+
+    def send_to_primary(self, message, timeout=750):
+        socket = QLocalSocket()
+        socket.connectToServer(self.server_name)
+        if not socket.waitForConnected(timeout):
+            return False
+        payload = json.dumps(message, ensure_ascii=False).encode('utf-8') + b'\n'
+        accepted = socket.write(payload) == len(payload)
+        socket.flush()
+        socket.waitForBytesWritten(timeout)
+        acknowledged = socket.waitForReadyRead(timeout) and bytes(socket.readAll()).startswith(b'OK\n')
+        socket.disconnectFromServer()
+        return accepted and acknowledged
+
+    def listen(self):
+        return self.server.listen(self.server_name)
+
+    def _accept_connections(self):
+        while self.server.hasPendingConnections():
+            socket = self.server.nextPendingConnection()
+            socket._taggster_buffer = bytearray()
+            socket.readyRead.connect(lambda s=socket: self._read_socket(s))
+            socket.disconnected.connect(lambda s=socket: self._finish_socket(s))
+            if socket.bytesAvailable():
+                self._read_socket(socket)
+
+    def _finish_socket(self, socket):
+        self._read_socket(socket)
+        socket.deleteLater()
+
+    def _read_socket(self, socket):
+        socket._taggster_buffer.extend(bytes(socket.readAll()))
+        while b'\n' in socket._taggster_buffer:
+            raw, _, remainder = socket._taggster_buffer.partition(b'\n')
+            socket._taggster_buffer = bytearray(remainder)
+            try:
+                message = json.loads(raw.decode('utf-8'))
+                socket.write(b'OK\n')
+                socket.flush()
+                self.message_received.emit(message)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
 
 DARK_STYLE = """
 /* ── Base ── */
@@ -2698,6 +2842,32 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(self.cb_numeric_track)
 
+        layout.addSpacing(12)
+        explorer_group = QGroupBox("Windows Explorer")
+        explorer_layout = QVBoxLayout(explorer_group)
+        explorer_hint = QLabel(
+            "Fügt bei Ordnern den Befehl „Mit Adolar Taggster öffnen“ hinzu.\n"
+            "Unter Windows 11 steht er gegebenenfalls unter „Weitere Optionen anzeigen“.")
+        explorer_hint.setWordWrap(True)
+        explorer_hint.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        explorer_layout.addWidget(explorer_hint)
+
+        self.explorer_status_label = QLabel()
+        explorer_layout.addWidget(self.explorer_status_label)
+
+        explorer_buttons = QHBoxLayout()
+        self.explorer_install_btn = QPushButton("Eintrag hinzufügen")
+        self.explorer_install_btn.clicked.connect(self._install_explorer_entry)
+        self.explorer_remove_btn = QPushButton("Eintrag entfernen")
+        self.explorer_remove_btn.setObjectName("secondary")
+        self.explorer_remove_btn.clicked.connect(self._remove_explorer_entry)
+        explorer_buttons.addWidget(self.explorer_install_btn)
+        explorer_buttons.addWidget(self.explorer_remove_btn)
+        explorer_buttons.addStretch()
+        explorer_layout.addLayout(explorer_buttons)
+        layout.addWidget(explorer_group)
+        self._refresh_explorer_status()
+
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         cancel_btn = QPushButton("Abbrechen")
@@ -2714,6 +2884,47 @@ class SettingsDialog(QDialog):
 
     def get_numeric_track(self):
         return self.cb_numeric_track.isChecked()
+
+    def _refresh_explorer_status(self):
+        status = _explorer_integration_status()
+        if status == 'installed':
+            self.explorer_status_label.setText("✓ Kontextmenü-Eintrag ist installiert.")
+            self.explorer_status_label.setStyleSheet("color: #a6e3a1;")
+            self.explorer_install_btn.setText("Eintrag reparieren")
+            self.explorer_remove_btn.setEnabled(True)
+        elif status == 'outdated':
+            self.explorer_status_label.setText("⚠ Der gespeicherte Programmpfad ist nicht mehr aktuell.")
+            self.explorer_status_label.setStyleSheet("color: #f9e2af;")
+            self.explorer_install_btn.setText("Eintrag reparieren")
+            self.explorer_remove_btn.setEnabled(True)
+        elif status == 'unsupported':
+            self.explorer_status_label.setText("Nur unter Windows verfügbar.")
+            self.explorer_status_label.setStyleSheet("color: #6c7086;")
+            self.explorer_install_btn.setEnabled(False)
+            self.explorer_remove_btn.setEnabled(False)
+        else:
+            self.explorer_status_label.setText("Kontextmenü-Eintrag ist nicht installiert.")
+            self.explorer_status_label.setStyleSheet("color: #a6adc8;")
+            self.explorer_install_btn.setText("Eintrag hinzufügen")
+            self.explorer_remove_btn.setEnabled(False)
+
+    def _install_explorer_entry(self):
+        try:
+            _install_explorer_integration()
+            self._refresh_explorer_status()
+            QMessageBox.information(
+                self, "Windows Explorer",
+                "Der Eintrag „Mit Adolar Taggster öffnen“ wurde hinzugefügt.")
+        except OSError as exc:
+            QMessageBox.warning(self, "Windows Explorer", f"Der Eintrag konnte nicht erstellt werden:\n{exc}")
+
+    def _remove_explorer_entry(self):
+        try:
+            _remove_explorer_integration()
+            self._refresh_explorer_status()
+            QMessageBox.information(self, "Windows Explorer", "Der Kontextmenü-Eintrag wurde entfernt.")
+        except OSError as exc:
+            QMessageBox.warning(self, "Windows Explorer", f"Der Eintrag konnte nicht entfernt werden:\n{exc}")
 
 
 class FolderTreeWidget(QTreeWidget):
@@ -3930,6 +4141,33 @@ class MainWindow(QMainWindow):
         )
         self._scan_thread.start()
 
+    def _open_external_folder(self, path=None):
+        """Activate this window and optionally load a folder received at launch."""
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+        if not path:
+            return
+        try:
+            valid = Path(path).is_dir()
+        except OSError:
+            valid = False
+        if not valid:
+            QMessageBox.warning(self, "Ordner nicht gefunden", f"Der Ordner ist nicht verfügbar:\n{path}")
+            return
+        normalized = os.path.normpath(path)
+        self._navigate_tree(normalized)
+        self._load_folder(normalized)
+
+    def _handle_instance_message(self, message):
+        if not isinstance(message, dict):
+            return
+        self._open_external_folder(message.get('folder'))
+
     def _cancel_scan(self):
         if hasattr(self, '_scan_thread'):
             self._scan_thread.cancel()
@@ -4579,19 +4817,27 @@ class MainWindow(QMainWindow):
                 self._rebuild_adolar_bar()
 
 
+def _create_icon_image(size=64):
+    """Generate the Taggster icon as a Pillow image."""
+    from PIL import ImageDraw, ImageFont
+    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    # Rounded background
+    d.rounded_rectangle([0, 0, 63, 63], radius=14, fill='#1e1e2e')
+    # Tag shape
+    d.polygon([(6,10),(42,10),(58,32),(42,54),(6,54)], outline='#cba6f7', width=3)
+    d.ellipse([12,26,22,36], fill='#cba6f7')
+    # Music note
+    d.text((34, 18), '♪', fill='#89b4fa', font=ImageFont.load_default(size=22))
+    if size != 64:
+        img = img.resize((size, size), Image.Resampling.LANCZOS)
+    return img
+
+
 def _make_icon():
     """Generate app icon programmatically via Pillow."""
     try:
-        from PIL import ImageDraw, ImageFont
-        img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        # Rounded background
-        d.rounded_rectangle([0, 0, 63, 63], radius=14, fill='#1e1e2e')
-        # Tag shape
-        d.polygon([(6,10),(42,10),(58,32),(42,54),(6,54)], outline='#cba6f7', width=3)
-        d.ellipse([12,26,22,36], fill='#cba6f7')
-        # Music note
-        d.text((34, 18), '♪', fill='#89b4fa', font=ImageFont.load_default(size=22))
+        img = _create_icon_image()
         buf = BytesIO()
         img.save(buf, format='PNG')
         pix = QPixmap()
@@ -4603,13 +4849,32 @@ def _make_icon():
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
     app.setStyle('Fusion')        # must come before setStyleSheet
     app.setStyleSheet(DARK_STYLE)
+
+    folder = _folder_from_arguments(sys.argv[1:])
+    instance = SingleInstanceController(app)
+    message = {'action': 'open', 'folder': folder}
+    if instance.send_to_primary(message):
+        return 0
+    if not instance.listen():
+        # Another copy may have won a simultaneous-start race. Try it once more.
+        if instance.send_to_primary(message, timeout=1500):
+            return 0
+        QMessageBox.critical(
+            None, APP_NAME,
+            "Taggster konnte die Kommunikation mit der bereits laufenden Instanz nicht öffnen.")
+        return 1
+
     window = MainWindow()
     window.setWindowIcon(_make_icon())
+    instance.message_received.connect(window._handle_instance_message)
     window.show()
-    sys.exit(app.exec())
+    if folder:
+        QTimer.singleShot(0, lambda: window._open_external_folder(folder))
+    return app.exec()
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
