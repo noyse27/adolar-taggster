@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QTreeView
 
 from mutagen.mp3 import MP3
 from mutagen.id3 import (
-    ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TDRC, TCON, TRCK,
+    ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TDRC, TDOR, TCON, TRCK,
     APIC, TPOS, TPUB, COMM
 )
 from mutagen.id3._util import ID3NoHeaderError
@@ -446,7 +446,7 @@ QDialogButtonBox QPushButton { min-width: 80px; }
 def load_mp3_tags(path):
     """Load tags from an MP3 file, returns dict."""
     tags = {
-        'title': '', 'artist': '', 'album': '', 'year': '',
+        'title': '', 'artist': '', 'album': '', 'year': '', 'original_year': '',
         'genre': '', 'tracknumber': '', 'duration': 0, 'bitrate': 0,
         'cover': None
     }
@@ -460,6 +460,7 @@ def load_mp3_tags(path):
             tags['artist'] = str(id3.get('TPE1', ''))
             tags['album'] = str(id3.get('TALB', ''))
             tags['year'] = str(id3.get('TDRC', ''))
+            tags['original_year'] = str(id3.get('TDOR', ''))
             tags['genre'] = str(id3.get('TCON', ''))
             tags['tracknumber'] = str(id3.get('TRCK', ''))
             tags['bpm'] = str(id3.get('TBPM', ''))
@@ -495,6 +496,8 @@ def write_mp3_tags(path, tag_data, cover_data=None):
             id3['TALB'] = TALB(encoding=3, text=tag_data['album'])
         if tag_data.get('year'):
             id3['TDRC'] = TDRC(encoding=3, text=str(tag_data['year']))
+        if tag_data.get('original_year'):
+            id3['TDOR'] = TDOR(encoding=3, text=str(tag_data['original_year']))
         if tag_data.get('genre'):
             id3['TCON'] = TCON(encoding=3, text=tag_data['genre'])
         if tag_data.get('tracknumber'):
@@ -2332,6 +2335,7 @@ class TagEditorDialog(QDialog):
             ('Album',        'album',        tags.get('album', '')),
             ('Album Artist', 'album_artist', tags.get('album_artist', '')),
             ('Jahr',         'year',         tags.get('year', '')),
+            ('Original-Jahr', 'original_year', tags.get('original_year', '')),
             ('Genre',        'genre',        tags.get('genre', '')),
             ('Track',        'tracknumber',  tags.get('tracknumber', '')),
             ('Disc#',        'discnumber',   tags.get('discnumber', '')),
@@ -2342,6 +2346,12 @@ class TagEditorDialog(QDialog):
         for row, (label, key, val) in enumerate(fields):
             grid.addWidget(QLabel(label + ':'), row, 0)
             inp = QLineEdit(val)
+            if key == 'original_year':
+                inp.setToolTip(
+                    "Erscheinungsjahr des Original-Songs (ID3 TDOR), falls abweichend\n"
+                    "vom Jahr dieser Edition — z.B. bei Compilations wie \"Now Yearbook '91\"\n"
+                    "(Compilation von 2025, Songs von 1991)."
+                )
             self._inputs[key] = inp
             grid.addWidget(inp, row, 1)
         top_row.addLayout(grid, 1)
@@ -2408,6 +2418,7 @@ BATCH_FIELDS = [
     ('Album',        'album'),
     ('Album Artist', 'album_artist'),
     ('Jahr',         'year'),
+    ('Original-Jahr', 'original_year'),
     ('Genre',        'genre'),
     ('Label',        'label'),
     ('BPM',          'bpm'),
@@ -2474,6 +2485,13 @@ class BatchTagEditorDialog(QDialog):
             else:
                 inp = QLineEdit()
                 inp.setPlaceholderText(KEEP)
+                if key == 'original_year':
+                    inp.setToolTip(
+                        "Erscheinungsjahr des Original-Songs (ID3 TDOR), falls abweichend\n"
+                        "vom Jahr dieser Edition — z.B. bei Compilations wie \"Now Yearbook '91\"\n"
+                        "(Compilation von 2025, Songs von 1991). Praktisch um es für alle\n"
+                        "markierten Tracks einer Compilation auf einmal zu setzen."
+                    )
                 self._inputs[key] = inp
                 grid.addWidget(inp, row, 1)
         top_row.addLayout(grid, 1)
@@ -3677,6 +3695,7 @@ class MainWindow(QMainWindow):
             ("Kommentar",   'comment',      False, 'stretch'),
             ("Label",       'label',        False, 'contents'),
             ("Disc#",       'discnumber',   False, 'contents'),
+            ("Original-Jahr", 'original_year', False, 'contents'),
         ]
         # Load saved visibility
         saved_vis = self._load_config().get('column_visibility', {})
@@ -4223,6 +4242,7 @@ class MainWindow(QMainWindow):
             self.file_table.setItem(i, 12, QTableWidgetItem(tags.get('comment', '')))
             self.file_table.setItem(i, 13, QTableWidgetItem(tags.get('label', '')))
             self.file_table.setItem(i, 14, QTableWidgetItem(tags.get('discnumber', '')))
+            self.file_table.setItem(i, 15, QTableWidgetItem(tags.get('original_year', '')))
 
         self.file_table.setSortingEnabled(True)
         self._select_all()
