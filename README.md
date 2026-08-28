@@ -159,6 +159,7 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 - Originaljahr-Suche (MusicBrainz): Fortschrittsbalken in der Statusleiste zeigt den Suchfortschritt zusätzlich zum bisherigen Text
 - Originaljahr-Suche: robustere Retries bei MusicBrainz-Verbindungsfehlern/503-Überlastung, verständlichere Fehlermeldungen statt roher Exception-Texte
 - Originaljahr-Suche: Dateien mit bereits gesetztem Original-Jahr werden standardmäßig übersprungen; optionale erneute Abfrage per Checkbox, deren Wahl für die laufende Session erhalten bleibt (Standard nach Neustart: nur leere Original-Jahre prüfen)
+- Discogs/MusicBrainz-Suche: bei erkannter Compilation (Album Artist "Various" oder unterschiedliche Künstler unter den markierten Tracks) wird das Suchfeld mit "Various Artists" statt dem Künstler des ersten Tracks vorbelegt
 
 ### v2.1
 - Optional per-user Windows Explorer context-menu integration ("Mit Adolar Taggster öffnen"), configurable in Settings without an installer or administrator rights
