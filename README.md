@@ -155,7 +155,12 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### v2.1 (current)
+### v2.2 (current)
+- Originaljahr-Suche (MusicBrainz): Fortschrittsbalken in der Statusleiste zeigt den Suchfortschritt zusätzlich zum bisherigen Text
+- Originaljahr-Suche: robustere Retries bei MusicBrainz-Verbindungsfehlern/503-Überlastung, verständlichere Fehlermeldungen statt roher Exception-Texte
+- Originaljahr-Suche: Dateien mit bereits gesetztem Original-Jahr werden standardmäßig übersprungen; optionale erneute Abfrage per Checkbox, deren Wahl für die laufende Session erhalten bleibt (Standard nach Neustart: nur leere Original-Jahre prüfen)
+
+### v2.1
 - Optional per-user Windows Explorer context-menu integration ("Mit Adolar Taggster öffnen"), configurable in Settings without an installer or administrator rights
 - Single-instance folder forwarding: Explorer opens the selected folder in the running Taggster window and starts the MP3 scan immediately instead of opening a duplicate window
 - New **Original-Jahr (TDOR)** field in the single-file and batch tag editors, plus an optional table column — distinguishes a compilation's release year from the original song's year (e.g. "Now Yearbook '91" released 2025, songs from 1991); prep work for the in-progress Adolar Songster year-guessing feature

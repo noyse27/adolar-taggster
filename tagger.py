@@ -8,6 +8,7 @@ import re
 import json
 import getpass
 import hashlib
+import time
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,19 @@ from PIL import Image
 
 APP_NAME = "Adolar Taggster"
 EXPLORER_VERB_KEY = r"Software\Classes\Directory\shell\AdolarTaggster"
+MUSICBRAINZ_RECORDING_URL = "https://musicbrainz.org/ws/2/recording/"
+MUSICBRAINZ_USER_AGENT = "AdolarTaggster/2.2 (https://polze.net; adolartaggster@polze.net)"
+MUSICBRAINZ_REQUEST_DELAY = 1.1
+_musicbrainz_last_request_time = 0.0
+
+
+def default_musicbrainz_config():
+    return {
+        'enabled': True,
+        'base_url': 'https://musicbrainz.org',
+        'cover_art_url': 'https://coverartarchive.org',
+        'request_delay': MUSICBRAINZ_REQUEST_DELAY,
+    }
 
 
 def _launch_command():
@@ -551,6 +565,222 @@ def clean_artist(name):
     return re.sub(r'\s*\(\d+\)\s*$', '', name.rstrip(' *')).strip()
 
 
+def parse_year(value):
+    match = re.search(r'\b(1[89]\d{2}|20\d{2})\b', str(value or ''))
+    return int(match.group(1)) if match else None
+
+
+def clean_musicbrainz_artist(value):
+    text = clean_artist(str(value or ''))
+    text = re.sub(r'(?i)\s+(feat\.?|featuring|ft\.?|with)\s+.*$', '', text)
+    text = text.replace('&', ' ').replace('+', ' ')
+    text = re.sub(r'\s+', ' ', text.replace('"', '').replace('\\', '')).strip()
+    return text
+
+
+def primary_musicbrainz_artist(value):
+    text = clean_artist(str(value or ''))
+    text = re.split(r'(?i)\s+(?:&|and|\+|feat\.?|featuring|ft\.?|with)\s+', text, maxsplit=1)[0]
+    return clean_musicbrainz_artist(text)
+
+
+def clean_musicbrainz_title(value):
+    text = str(value or '')
+    text = re.sub(r'(?i)\s+\((?:[^)]*(?:remaster|remastered|radio edit|single edit|album version|mono|stereo)[^)]*)\)', '', text)
+    text = re.sub(r'(?i)\s+-\s+(?:remaster(?:ed)?|radio edit|single edit|album version|mono|stereo).*$','', text)
+    text = re.sub(r'\s+', ' ', text.replace('"', '').replace('\\', '')).strip()
+    return text
+
+
+def musicbrainz_artist_credit_text(recording):
+    parts = []
+    for credit in recording.get('artist-credit', []) or []:
+        if isinstance(credit, str):
+            parts.append(credit)
+        elif isinstance(credit, dict):
+            if credit.get('name'):
+                parts.append(credit['name'])
+            elif credit.get('artist', {}).get('name'):
+                parts.append(credit['artist']['name'])
+            if credit.get('joinphrase'):
+                parts.append(credit['joinphrase'])
+    return ''.join(parts).strip()
+
+
+def normalized_words(value):
+    value = re.sub(r'(?i)\b(the|and|feat|featuring|ft|with)\b', ' ', str(value or ''))
+    return set(re.findall(r'[a-z0-9]+', value.lower()))
+
+
+def normalized_title_text(value):
+    return ' '.join(re.findall(r'[a-z0-9]+', clean_musicbrainz_title(value).lower()))
+
+
+def artist_match_score(query_artist, candidate_artist):
+    query_words = normalized_words(query_artist)
+    candidate_words = normalized_words(candidate_artist)
+    if not query_words or not candidate_words:
+        return -55
+    overlap = len(query_words & candidate_words)
+    if overlap == len(query_words) or overlap == len(candidate_words):
+        return 15
+    if overlap:
+        return 5
+    return -60
+
+
+def title_variant_penalty(query_title, candidate_title):
+    query_norm = normalized_title_text(query_title)
+    candidate_norm = normalized_title_text(candidate_title)
+    if not query_norm or not candidate_norm:
+        return 20
+    if query_norm == candidate_norm:
+        return 0
+    if query_norm in candidate_norm:
+        noisy = r'(?i)\b(remix|instrumental|karaoke|live|dub|edit|version|remaster)\b'
+        return 35 if re.search(noisy, candidate_title or '') else 10
+    return 50
+
+
+def choose_musicbrainz_candidate(recordings, original_artist, original_title, duration=None):
+    candidates = []
+    expected_ms = int(duration * 1000) if duration else None
+    for rec in recordings:
+        years = []
+        year = parse_year(rec.get('first-release-date'))
+        if year:
+            years.append(year)
+        for release in rec.get('releases', []) or []:
+            release_year = parse_year(release.get('date'))
+            if release_year:
+                years.append(release_year)
+        year = min(years) if years else None
+        if not year:
+            continue
+        score = int(rec.get('score') or 0)
+        credit_text = musicbrainz_artist_credit_text(rec)
+        length = rec.get('length')
+        duration_penalty = 0
+        if expected_ms and length:
+            try:
+                diff = abs(int(length) - expected_ms)
+                duration_penalty = min(25, diff // 5000)
+            except (TypeError, ValueError):
+                duration_penalty = 0
+        artist_bonus = artist_match_score(original_artist, credit_text)
+        title_penalty = title_variant_penalty(original_title, rec.get('title', ''))
+        confidence = max(0, score - duration_penalty + artist_bonus - title_penalty)
+        candidates.append({
+            'year': year,
+            'score': score,
+            'title': rec.get('title', ''),
+            'artist': credit_text,
+            'date': rec.get('first-release-date', ''),
+            'confidence': confidence,
+            'exact_title': title_penalty == 0,
+            'artist_ok': artist_bonus > 0,
+        })
+
+    if not candidates:
+        return None
+
+    exact = [c for c in candidates if c['exact_title'] and c['artist_ok'] and c['confidence'] >= 55]
+    if exact:
+        return min(exact, key=lambda c: (c['year'], -c['confidence']))
+
+    candidates.sort(key=lambda c: (-c['confidence'], c['year']))
+    best_confidence = candidates[0]['confidence']
+    if best_confidence < 60:
+        return None
+    plausible = [c for c in candidates if c['confidence'] >= max(60, best_confidence - 20)]
+    return min(plausible, key=lambda c: c['year'])
+
+
+def musicbrainz_endpoint(base_url, entity):
+    return f"{base_url.rstrip('/')}/ws/2/{entity.strip('/')}/"
+
+
+def musicbrainz_get(params, headers, base_url=None, request_delay=None, entity='recording'):
+    global _musicbrainz_last_request_time
+    endpoint = musicbrainz_endpoint(base_url or 'https://musicbrainz.org', entity)
+    delay = MUSICBRAINZ_REQUEST_DELAY if request_delay is None else max(0.0, float(request_delay))
+    max_attempts = 5
+    response = None
+    last_exc = None
+    for attempt in range(max_attempts):
+        wait = delay - (time.time() - _musicbrainz_last_request_time)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            response = requests.get(endpoint, headers=headers, params=params, timeout=20)
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            _musicbrainz_last_request_time = time.time()
+            if attempt < max_attempts - 1:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            raise
+        _musicbrainz_last_request_time = time.time()
+        last_exc = None
+        if response.status_code not in (429, 503):
+            break
+        if attempt < max_attempts - 1:
+            time.sleep(2.0 * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+    response.raise_for_status()
+    return response
+
+
+def fetch_original_year(artist, title, duration=None, mb_config=None):
+    """Return the earliest MusicBrainz recording year for artist/title, if found."""
+    mb_config = {**default_musicbrainz_config(), **(mb_config or {})}
+    original_artist = str(artist or '')
+    artist = clean_musicbrainz_artist(artist)
+    title = clean_musicbrainz_title(title)
+    if not artist or not title:
+        return None
+
+    primary_artist = primary_musicbrainz_artist(original_artist)
+    artist_queries = []
+    if primary_artist:
+        artist_queries.append(primary_artist)
+    if artist and artist not in artist_queries:
+        artist_queries.append(artist)
+    headers = {
+        'User-Agent': MUSICBRAINZ_USER_AGENT,
+        'Accept': 'application/json',
+    }
+
+    def search_recordings(query_artist, single_only=False):
+        query = f'recording:"{title}" AND artistname:"{query_artist}"'
+        if single_only:
+            query += ' AND primarytype:single'
+        params = {'query': query, 'fmt': 'json', 'limit': 25, 'inc': 'artist-credits+releases'}
+        response = musicbrainz_get(
+            params, headers,
+            base_url=mb_config.get('base_url'),
+            request_delay=mb_config.get('request_delay'),
+        )
+        return response.json().get('recordings', [])
+
+    for single_only in (True, False):
+        recordings = []
+        for query_artist in artist_queries:
+            try:
+                recordings.extend(search_recordings(query_artist, single_only=single_only))
+            except requests.exceptions.RequestException:
+                if single_only:
+                    continue
+                raise
+            if recordings:
+                break
+        found = choose_musicbrainz_candidate(recordings, original_artist, title, duration)
+        if found:
+            return found
+    return None
+
+
 def natural_sort_key(path):
     """Sort key that sorts '10-foo.mp3' after '9-foo.mp3'."""
     parts = re.split(r'(\d+)', path.name.lower())
@@ -848,6 +1078,194 @@ class DiscogsDetailThread(QThread):
         except Exception:
             pass
         return None
+
+
+def musicbrainz_release_artist_credit(release):
+    return musicbrainz_artist_credit_text(release)
+
+
+def musicbrainz_label_text(release):
+    labels = []
+    for info in release.get('label-info', []) or []:
+        label = info.get('label') or {}
+        name = label.get('name')
+        if name:
+            catno = info.get('catalog-number') or ''
+            labels.append(f"{name} [{catno}]" if catno else name)
+    return ', '.join(labels)
+
+
+def musicbrainz_format_text(release):
+    formats = []
+    for medium in release.get('media', []) or []:
+        fmt = medium.get('format')
+        if fmt and fmt not in formats:
+            formats.append(fmt)
+    return ', '.join(formats)
+
+
+def musicbrainz_tracklist(release):
+    tracks = []
+    media = release.get('media', []) or []
+    release_artist = musicbrainz_release_artist_credit(release)
+    for medium in media:
+        disc_pos = str(medium.get('position') or '')
+        for track in medium.get('tracks', []) or []:
+            position = str(track.get('number') or track.get('position') or '')
+            display_position = position
+            if disc_pos and len(media) > 1 and '/' not in position and '-' not in position:
+                display_position = f"{disc_pos}-{position}"
+            title = track.get('title', '')
+            artist = musicbrainz_artist_credit_text(track)
+            if artist and release_artist and artist.lower() != release_artist.lower():
+                title = f"{title} /// {artist}"
+            tracks.append({'position': display_position, 'title': title})
+    return tracks
+
+
+def musicbrainz_cover_url(cover_art_url, release_id):
+    if not release_id:
+        return ''
+    return f"{cover_art_url.rstrip('/')}/release/{release_id}/front-500"
+
+
+class MusicBrainzSearchThread(QThread):
+    results_ready = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, artist, album, year, mb_config=None):
+        super().__init__()
+        self.artist = artist
+        self.album = album
+        self.year = year
+        self.mb_config = {**default_musicbrainz_config(), **(mb_config or {})}
+
+    def run(self):
+        try:
+            headers = {'User-Agent': MUSICBRAINZ_USER_AGENT, 'Accept': 'application/json'}
+            response = self._search(headers, album_only=bool(self.album))
+            data = response.json()
+            if not data.get('releases') and self.album:
+                response = self._search(headers, album_only=False)
+                data = response.json()
+            results = []
+            for item in data.get('releases', []):
+                release_id = item.get('id')
+                title = item.get('title', '')
+                artist = musicbrainz_release_artist_credit(item)
+                caa = item.get('cover-art-archive') or {}
+                cover_url = musicbrainz_cover_url(self.mb_config.get('cover_art_url'), release_id) if caa.get('front') else ''
+                results.append({
+                    'id': release_id,
+                    'title': f"{artist} - {title}" if artist else title,
+                    'year': parse_year(item.get('date')) or '',
+                    'label': musicbrainz_label_text(item),
+                    'country': item.get('country') or '',
+                    'format': musicbrainz_format_text(item),
+                    'cover_url': cover_url,
+                    'thumb_url': cover_url,
+                    'tracklist': [],
+                    'genre': '',
+                    'style': '',
+                    'catno': '',
+                    'resource_url': release_id,
+                    'is_master': False,
+                    'source': 'musicbrainz',
+                })
+            album_norm = normalized_title_text(self.album)
+            results.sort(key=lambda r: (
+                0 if album_norm and normalized_title_text(r.get('title', '').split(' - ', 1)[-1]) == album_norm else 1,
+                int(r['year']) if str(r.get('year', '')).isdigit() else 9999,
+                r.get('title', '').lower(),
+            ))
+            self.results_ready.emit(results)
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _search(self, headers, album_only=False):
+        terms = []
+        if self.album:
+            terms.append(f'release:"{self.album}"')
+        if self.artist:
+            terms.append(f'artist:"{self.artist}"')
+        if self.year:
+            terms.append(f'date:{self.year}')
+        if album_only:
+            terms.append('primarytype:album')
+        params = {
+            'query': ' AND '.join(terms) if terms else '*',
+            'fmt': 'json',
+            'limit': 50,
+            'inc': 'artist-credits+labels+media',
+        }
+        return musicbrainz_get(
+            params, headers,
+            base_url=self.mb_config.get('base_url'),
+            request_delay=self.mb_config.get('request_delay'),
+            entity='release',
+        )
+
+
+class MusicBrainzDetailThread(QThread):
+    detail_ready = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, release_id, cover_url='', mb_config=None):
+        super().__init__()
+        self.release_id = release_id
+        self.cover_url = cover_url
+        self.mb_config = {**default_musicbrainz_config(), **(mb_config or {})}
+
+    def run(self):
+        try:
+            headers = {'User-Agent': MUSICBRAINZ_USER_AGENT, 'Accept': 'application/json'}
+            response = musicbrainz_get(
+                {'fmt': 'json', 'inc': 'artists+artist-credits+labels+media+recordings+release-groups+genres+tags'},
+                headers,
+                base_url=self.mb_config.get('base_url'),
+                request_delay=self.mb_config.get('request_delay'),
+                entity=f"release/{self.release_id}",
+            )
+            data = response.json()
+
+            cover_data = None
+            if self.cover_url:
+                try:
+                    cr = requests.get(
+                        self.cover_url,
+                        headers={'User-Agent': MUSICBRAINZ_USER_AGENT},
+                        timeout=15,
+                        allow_redirects=True,
+                    )
+                    if cr.status_code == 200:
+                        cover_data = cr.content
+                except Exception:
+                    pass
+
+            rg = data.get('release-group') or {}
+            genres = []
+            for source in (data.get('genres') or []) + (rg.get('genres') or []) + (data.get('tags') or []) + (rg.get('tags') or []):
+                name = source.get('name') if isinstance(source, dict) else None
+                if name and name not in genres:
+                    genres.append(name)
+
+            detail = {
+                'artist': musicbrainz_release_artist_credit(data),
+                'album': data.get('title', ''),
+                'year': str(parse_year(data.get('date')) or parse_year(rg.get('first-release-date')) or ''),
+                'genre': ', '.join(genres[:4]),
+                'style': '',
+                'label': musicbrainz_label_text(data),
+                'catno': '',
+                'tracklist': musicbrainz_tracklist(data),
+                'cover_data': cover_data,
+                'cover_url': self.cover_url,
+                'country': data.get('country', ''),
+                'notes': '',
+            }
+            self.detail_ready.emit(detail)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class DropCoverLabel(QLabel):
@@ -1507,6 +1925,68 @@ class DiscogsDialog(QDialog):
         self.search_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
         self.status_label.setText(f"Fehler: {msg}")
+
+
+class MusicBrainzDialog(DiscogsDialog):
+    def __init__(self, prefill, files, mb_config=None, cfg_save=None, cfg_load=None, parent=None):
+        self.mb_config = {**default_musicbrainz_config(), **(mb_config or {})}
+        super().__init__(prefill, files, discogs_token=None, cfg_save=cfg_save, cfg_load=cfg_load, parent=parent)
+        self.setWindowTitle(f"MusicBrainz Suche  [{len(files)} Dateien markiert]")
+
+    def _do_search(self):
+        self.search_btn.setEnabled(False)
+        self.load_btn.setEnabled(False)
+        self.status_label.setText("MusicBrainz-Suche laeuft...")
+        self.results_table.setRowCount(0)
+        self._search_thread = MusicBrainzSearchThread(
+            self.artist_input.text().strip(),
+            self.album_input.text().strip(),
+            self.year_input.text().strip(),
+            self.mb_config,
+        )
+        self._search_thread.results_ready.connect(self._on_results)
+        self._search_thread.error.connect(self._on_error)
+        self._search_thread.start()
+
+    def _on_result_selected(self):
+        rows = self.results_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        self.load_btn.setEnabled(True)
+        idx = rows[0].row()
+        if idx >= len(self._results):
+            return
+        if idx in self._detail_cache:
+            self._show_detail_info(self._detail_cache[idx])
+            return
+        result = self._results[idx]
+        self.status_label.setText("Lade MusicBrainz-Details...")
+        self._preview_thread = MusicBrainzDetailThread(
+            result['resource_url'], result['cover_url'], self.mb_config
+        )
+        self._preview_thread.detail_ready.connect(lambda d, i=idx: self._on_preview_detail(i, d))
+        self._preview_thread.error.connect(lambda e: self.status_label.setText(f"Fehler: {e}"))
+        self._preview_thread.start()
+
+    def _load_album(self):
+        rows = self.results_table.selectionModel().selectedRows()
+        if not rows or not self._results:
+            return
+        idx = rows[0].row()
+        if idx >= len(self._results):
+            return
+        if idx in self._detail_cache:
+            self._on_detail(self._detail_cache[idx])
+            return
+        result = self._results[idx]
+        self.load_btn.setEnabled(False)
+        self.status_label.setText("Lade MusicBrainz-Details und Cover...")
+        self._detail_thread = MusicBrainzDetailThread(
+            result['resource_url'], result['cover_url'], self.mb_config
+        )
+        self._detail_thread.detail_ready.connect(self._on_detail)
+        self._detail_thread.error.connect(self._on_error)
+        self._detail_thread.start()
 
 
 class ReplaceRulesDialog(QDialog):
@@ -2562,6 +3042,143 @@ class BatchTagEditorDialog(QDialog):
         # else: dialog stays open
 
 
+class OriginalYearReviewDialog(QDialog):
+    """Review MusicBrainz original-year matches before writing tags."""
+
+    def __init__(self, results, parent=None):
+        super().__init__(parent)
+        self.results = results
+        self.setWindowTitle("Originaljahr pruefen")
+        self.setMinimumSize(920, 520)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        hint = QLabel(
+            "MusicBrainz-Treffer bitte kurz pruefen. Angehaakte Zeilen schreiben "
+            "das gefundene Jahr in das Taggster-Feld Original-Jahr."
+        )
+        hint.setStyleSheet("color:#a6adc8; font-size:11px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels([
+            "", "Datei", "Kuenstler", "Titel", "Jahr", "Original jetzt",
+            "MusicBrainz", "Status"
+        ])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 32)
+        for col in range(1, 8):
+            hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(1, 180)
+        self.table.setColumnWidth(2, 130)
+        self.table.setColumnWidth(3, 180)
+        self.table.setColumnWidth(6, 120)
+        self.table.setColumnWidth(7, 180)
+        layout.addWidget(self.table)
+
+        self._populate()
+
+        btn_row = QHBoxLayout()
+        select_all_btn = QPushButton("Alle Treffer")
+        select_all_btn.setObjectName("secondary")
+        select_all_btn.clicked.connect(lambda: self._set_all(True))
+        select_none_btn = QPushButton("Keine")
+        select_none_btn.setObjectName("secondary")
+        select_none_btn.clicked.connect(lambda: self._set_all(False))
+        btn_row.addWidget(select_all_btn)
+        btn_row.addWidget(select_none_btn)
+        btn_row.addStretch()
+
+        cancel_btn = QPushButton("Abbrechen")
+        cancel_btn.setObjectName("secondary")
+        cancel_btn.clicked.connect(self.reject)
+        write_btn = QPushButton("Originaljahre schreiben")
+        write_btn.clicked.connect(self.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(write_btn)
+        layout.addLayout(btn_row)
+
+    def _populate(self):
+        self.table.setRowCount(len(self.results))
+        for row, result in enumerate(self.results):
+            found = result.get('found')
+            found_year = found.get('year') if found else None
+            current_orig = parse_year(result.get('current_original_year'))
+            release_year = parse_year(result.get('year'))
+            is_update = bool(found_year and found_year != current_orig)
+
+            check = QTableWidgetItem()
+            check.setFlags(check.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            check.setCheckState(Qt.CheckState.Checked if is_update else Qt.CheckState.Unchecked)
+            if not found_year:
+                check.setFlags(check.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            check.setData(Qt.ItemDataRole.UserRole, result)
+            self.table.setItem(row, 0, check)
+
+            values = [
+                result.get('filename', ''),
+                result.get('artist', ''),
+                result.get('title', ''),
+                str(result.get('year', '') or ''),
+                str(result.get('current_original_year', '') or ''),
+            ]
+            if found_year:
+                mb_text = str(found_year)
+                if found.get('date'):
+                    mb_text = found['date']
+                status = self._status_text(found, current_orig, release_year)
+            else:
+                mb_text = "-"
+                status = result.get('error') or "kein Treffer"
+            values.extend([mb_text, status])
+
+            for col, value in enumerate(values, 1):
+                item = QTableWidgetItem(value)
+                if not found_year:
+                    item.setForeground(QColor('#6c7086'))
+                elif col == 6 and found_year != release_year:
+                    item.setForeground(QColor('#a6e3a1'))
+                self.table.setItem(row, col, item)
+
+    def _status_text(self, found, current_orig, release_year):
+        found_year = found.get('year')
+        confidence = found.get('confidence', 0)
+        suffix = f"Score {confidence}"
+        if current_orig == found_year:
+            return f"bereits gesetzt ({suffix})"
+        if release_year and found_year != release_year:
+            return f"abweichend vom Jahr ({suffix})"
+        return f"gefunden ({suffix})"
+
+    def _set_all(self, checked):
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item and (item.flags() & Qt.ItemFlag.ItemIsEnabled):
+                item.setCheckState(state)
+
+    def selected_updates(self):
+        updates = []
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if not item or item.checkState() != Qt.CheckState.Checked:
+                continue
+            result = item.data(Qt.ItemDataRole.UserRole)
+            found = result.get('found') if result else None
+            if found and found.get('year'):
+                updates.append((result['path'], int(found['year'])))
+        return updates
+
+
 class AdolarSyncHistoryDialog(QDialog):
     """Shows the last N successful Adolar syncs (file/folder + date)."""
 
@@ -2817,10 +3434,11 @@ class AdolarConfigDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, token, numeric_track=False, parent=None):
+    def __init__(self, token, numeric_track=False, musicbrainz_config=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Einstellungen")
         self.setMinimumWidth(450)
+        self._musicbrainz_config = {**default_musicbrainz_config(), **(musicbrainz_config or {})}
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel("Discogs Personal Access Token:"))
@@ -2859,6 +3477,54 @@ class SettingsDialog(QDialog):
             "(z.B. Vinyl-Seiten A1/B2 statt echter Tracknummern)."
         )
         layout.addWidget(self.cb_numeric_track)
+
+        layout.addSpacing(12)
+        mb_group = QGroupBox("MusicBrainz")
+        mb_layout = QVBoxLayout(mb_group)
+        self.cb_musicbrainz_enabled = QCheckBox("MusicBrainz-Funktionen aktivieren")
+        self.cb_musicbrainz_enabled.setChecked(bool(self._musicbrainz_config.get('enabled', True)))
+        mb_layout.addWidget(self.cb_musicbrainz_enabled)
+
+        mb_layout.addWidget(QLabel("MusicBrainz Server:"))
+        self.musicbrainz_url_input = QLineEdit(self._musicbrainz_config.get('base_url', 'https://musicbrainz.org'))
+        self.musicbrainz_url_input.setPlaceholderText("https://musicbrainz.org oder http://localhost:5000")
+        mb_layout.addWidget(self.musicbrainz_url_input)
+
+        mb_layout.addWidget(QLabel("Cover Art Server:"))
+        self.cover_art_url_input = QLineEdit(self._musicbrainz_config.get('cover_art_url', 'https://coverartarchive.org'))
+        self.cover_art_url_input.setPlaceholderText("https://coverartarchive.org")
+        mb_layout.addWidget(self.cover_art_url_input)
+
+        delay_row = QHBoxLayout()
+        delay_row.addWidget(QLabel("Pause pro Request (Sek.):"))
+        self.musicbrainz_delay_input = QLineEdit(str(self._musicbrainz_config.get('request_delay', MUSICBRAINZ_REQUEST_DELAY)))
+        self.musicbrainz_delay_input.setMaximumWidth(70)
+        delay_row.addWidget(self.musicbrainz_delay_input)
+        delay_row.addStretch()
+        mb_layout.addLayout(delay_row)
+
+        mb_hint = QLabel(
+            "Public MusicBrainz: mindestens 1.1 Sekunden lassen. Beim eigenen Mirror kann "
+            "die Pause kleiner sein, je nachdem wie stark dein Server ist."
+        )
+        mb_hint.setWordWrap(True)
+        mb_hint.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        mb_layout.addWidget(mb_hint)
+
+        mb_test_row = QHBoxLayout()
+        mb_test_row.addStretch()
+        self.musicbrainz_test_btn = QPushButton("MusicBrainz testen")
+        self.musicbrainz_test_btn.setObjectName("secondary")
+        self.musicbrainz_test_btn.clicked.connect(self._test_musicbrainz)
+        mb_test_row.addWidget(self.musicbrainz_test_btn)
+        mb_layout.addLayout(mb_test_row)
+
+        self.musicbrainz_status_label = QLabel("")
+        self.musicbrainz_status_label.setWordWrap(True)
+        self.musicbrainz_status_label.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        mb_layout.addWidget(self.musicbrainz_status_label)
+
+        layout.addWidget(mb_group)
 
         layout.addSpacing(12)
         explorer_group = QGroupBox("Windows Explorer")
@@ -2902,6 +3568,42 @@ class SettingsDialog(QDialog):
 
     def get_numeric_track(self):
         return self.cb_numeric_track.isChecked()
+
+    def get_musicbrainz_config(self):
+        delay = MUSICBRAINZ_REQUEST_DELAY
+        try:
+            delay = float(self.musicbrainz_delay_input.text().strip().replace(',', '.'))
+        except ValueError:
+            pass
+        return {
+            'enabled': self.cb_musicbrainz_enabled.isChecked(),
+            'base_url': self.musicbrainz_url_input.text().strip().rstrip('/') or 'https://musicbrainz.org',
+            'cover_art_url': self.cover_art_url_input.text().strip().rstrip('/') or 'https://coverartarchive.org',
+            'request_delay': max(0.0, delay),
+        }
+
+    def _test_musicbrainz(self):
+        cfg = self.get_musicbrainz_config()
+        self.musicbrainz_test_btn.setEnabled(False)
+        self.musicbrainz_status_label.setText("Teste Verbindung...")
+        QApplication.processEvents()
+        try:
+            headers = {'User-Agent': MUSICBRAINZ_USER_AGENT, 'Accept': 'application/json'}
+            params = {'query': 'artist:"Michael Jackson"', 'fmt': 'json', 'limit': 1}
+            response = musicbrainz_get(
+                params, headers,
+                base_url=cfg.get('base_url'),
+                request_delay=cfg.get('request_delay'),
+                entity='artist',
+            )
+            count = response.json().get('count', 0)
+            self.musicbrainz_status_label.setText(f"Verbindung ok. Treffer im Artist-Index: {count}")
+            self.musicbrainz_status_label.setStyleSheet("color: #a6e3a1; font-size: 11px;")
+        except Exception as exc:
+            self.musicbrainz_status_label.setText(f"MusicBrainz nicht erreichbar: {exc}")
+            self.musicbrainz_status_label.setStyleSheet("color: #f38ba8; font-size: 11px;")
+        finally:
+            self.musicbrainz_test_btn.setEnabled(True)
 
     def _refresh_explorer_status(self):
         status = _explorer_integration_status()
@@ -3220,6 +3922,71 @@ class BpmCalculationThread(QThread):
         self.finished.emit(written, skipped)
 
 
+class OriginalYearLookupThread(QThread):
+    progress = pyqtSignal(int, int, str)   # done, total, filename
+    finished = pyqtSignal(object)          # result dicts
+    error = pyqtSignal(str)
+
+    def __init__(self, files, mb_config=None):
+        super().__init__()
+        self.files = files  # [(path, tags), ...]
+        self.mb_config = {**default_musicbrainz_config(), **(mb_config or {})}
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        results = []
+        total = len(self.files)
+        for i, (path, tags) in enumerate(self.files):
+            if self._cancel:
+                return
+            filename = Path(path).name
+            self.progress.emit(i, total, filename)
+
+            artist = tags.get('artist', '')
+            title = tags.get('title', '')
+            result = {
+                'path': path,
+                'filename': filename,
+                'artist': artist,
+                'title': title,
+                'year': tags.get('year', ''),
+                'current_original_year': tags.get('original_year', ''),
+                'found': None,
+                'error': '',
+            }
+            if not artist or not title:
+                result['error'] = 'Kuenstler/Titel fehlt'
+                results.append(result)
+                continue
+
+            if self._cancel:
+                return
+
+            try:
+                found = fetch_original_year(artist, title, tags.get('duration', 0), self.mb_config)
+                result['found'] = found
+            except requests.exceptions.ConnectionError:
+                result['error'] = 'Verbindung zu MusicBrainz fehlgeschlagen'
+            except requests.exceptions.Timeout:
+                result['error'] = 'Zeitueberschreitung bei MusicBrainz'
+            except requests.exceptions.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 503:
+                    result['error'] = 'MusicBrainz ueberlastet (503), bitte spaeter erneut versuchen'
+                elif status == 429:
+                    result['error'] = 'MusicBrainz Rate-Limit erreicht (429)'
+                else:
+                    result['error'] = f'MusicBrainz Fehler ({status or "?"})'
+            except Exception as exc:
+                result['error'] = str(exc)
+            results.append(result)
+
+        self.finished.emit(results)
+
+
 class FolderScanThread(QThread):
     progress = pyqtSignal(int, str)   # count, current filename
     scan_done = pyqtSignal(object)    # [(path, tags), ...] — object avoids list copy overhead
@@ -3264,6 +4031,7 @@ class MainWindow(QMainWindow):
         self._adolar_active = False  # True once the Adolar bar has connected successfully
         self._adolar_pending_folders = set()
         self._adolar_debounce_timer = None
+        self._original_year_include_existing = False  # session-only, resets on restart
         self._discogs_token = self._load_token()
         self._build_ui()
         self._build_menu()
@@ -3324,6 +4092,12 @@ class MainWindow(QMainWindow):
 
     def _save_token(self, token):
         self._save_config({'discogs_token': token})
+
+    def _load_musicbrainz_config(self):
+        return {**default_musicbrainz_config(), **self._load_config().get('musicbrainz', {})}
+
+    def _save_musicbrainz_config(self, config):
+        self._save_config({'musicbrainz': config})
 
     def _load_masks(self):
         default = ["%6-%2", "%1 - %6 - %2", "%1\\[%4] %3\\%6 - %2", "%1\\%3\\%6 - %2"]
@@ -3402,6 +4176,12 @@ class MainWindow(QMainWindow):
         self.discogs_btn.setStyleSheet(primary_ss)
         self.discogs_btn.clicked.connect(self._open_discogs)
 
+        self.musicbrainz_btn = QPushButton("♫  MusicBrainz")
+        self.musicbrainz_btn.setEnabled(False)
+        self.musicbrainz_btn.setStyleSheet(secondary_ss)
+        self.musicbrainz_btn.setToolTip("Sucht Album-Metadaten via MusicBrainz oder deinen konfigurierten Mirror")
+        self.musicbrainz_btn.clicked.connect(self._open_musicbrainz)
+
         self.rename_btn = QPushButton("✏️  Umbenennen")
         self.rename_btn.setEnabled(False)
         self.rename_btn.setStyleSheet(secondary_ss)
@@ -3461,6 +4241,15 @@ class MainWindow(QMainWindow):
         self.bpm_btn.setStyleSheet(secondary_ss)
         self.bpm_btn.clicked.connect(self._calculate_bpm)
 
+        self.original_year_btn = QPushButton("Originaljahr")
+        self.original_year_btn.setEnabled(False)
+        self.original_year_btn.setToolTip(
+            "Sucht das urspruengliche Erscheinungsjahr der markierten Tracks via MusicBrainz\n"
+            "und schreibt es nach Pruefung in das Taggster-Feld Original-Jahr"
+        )
+        self.original_year_btn.setStyleSheet(secondary_ss)
+        self.original_year_btn.clicked.connect(self._lookup_original_years)
+
         self.select_all_btn = QPushButton("Alle")
         self.select_all_btn.setStyleSheet(secondary_ss)
         self.select_all_btn.clicked.connect(self._select_all)
@@ -3497,6 +4286,7 @@ class MainWindow(QMainWindow):
         self.cancel_scan_btn.clicked.connect(self._cancel_scan)
 
         toolbar_layout.addWidget(self.discogs_btn)
+        toolbar_layout.addWidget(self.musicbrainz_btn)
         toolbar_layout.addWidget(self.rename_btn)
         toolbar_layout.addWidget(self.quick_rename_btn)
         toolbar_layout.addWidget(self.filetotag_btn)
@@ -3504,6 +4294,7 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.replace_rules_btn)
         toolbar_layout.addWidget(self.autonumber_btn)
         toolbar_layout.addWidget(self.bpm_btn)
+        toolbar_layout.addWidget(self.original_year_btn)
         toolbar_layout.addSpacing(10)
         toolbar_layout.addWidget(self.select_all_btn)
         toolbar_layout.addWidget(self.deselect_btn)
@@ -3758,6 +4549,12 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Bereit")
+
+        self.status_progress = QProgressBar()
+        self.status_progress.setFixedWidth(140)
+        self.status_progress.setTextVisible(False)
+        self.status_progress.setVisible(False)
+        self.status_bar.addPermanentWidget(self.status_progress)
 
     _QUICK_BTN_STYLE = ("QPushButton { text-align:left; background:transparent; color:#a6adc8;"
                         " border:none; padding:3px 6px; font-size:12px; border-radius:4px; }"
@@ -4130,12 +4927,14 @@ class MainWindow(QMainWindow):
         self._save_config({'last_folder': path})
         self.folder_label.setText(path)
         self.discogs_btn.setEnabled(False)
+        self.musicbrainz_btn.setEnabled(False)
         self.rename_btn.setEnabled(False)
         self.quick_rename_btn.setEnabled(False)
         self.filetotag_btn.setEnabled(False)
         self.quick_filetotag_btn.setEnabled(False)
         self.autonumber_btn.setEnabled(False)
         self.bpm_btn.setEnabled(False)
+        self.original_year_btn.setEnabled(False)
 
         # Each scan gets a unique ID — stale results from old scans are dropped
         self._scan_id = getattr(self, '_scan_id', 0) + 1
@@ -4291,12 +5090,14 @@ class MainWindow(QMainWindow):
         selected = len(rows)
         has_sel = selected > 0
         self.discogs_btn.setEnabled(has_sel)
+        self.musicbrainz_btn.setEnabled(has_sel and self._load_musicbrainz_config().get('enabled', True))
         self.rename_btn.setEnabled(has_sel)
         self.quick_rename_btn.setEnabled(has_sel)
         self.filetotag_btn.setEnabled(has_sel)
         self.quick_filetotag_btn.setEnabled(has_sel)
         self.autonumber_btn.setEnabled(has_sel)
         self.bpm_btn.setEnabled(has_sel)
+        self.original_year_btn.setEnabled(has_sel and self._load_musicbrainz_config().get('enabled', True))
         self.move_up_btn.setEnabled(selected == 1)
         self.move_down_btn.setEnabled(selected == 1)
         if self._files:
@@ -4474,6 +5275,23 @@ class MainWindow(QMainWindow):
         dlg = DiscogsDialog(
             self._get_prefill(), selected,
             self._discogs_token,
+            cfg_save=self._save_config,
+            cfg_load=self._load_config,
+            parent=self
+        )
+        dlg.exec()
+
+    def _open_musicbrainz(self):
+        mb_config = self._load_musicbrainz_config()
+        if not mb_config.get('enabled', True):
+            QMessageBox.information(self, "MusicBrainz", "MusicBrainz ist in den Einstellungen deaktiviert.")
+            return
+        selected = self._sort_for_discogs(self._get_selected_files())
+        if not selected:
+            return
+        dlg = MusicBrainzDialog(
+            self._get_prefill(), selected,
+            mb_config,
             cfg_save=self._save_config,
             cfg_load=self._load_config,
             parent=self
@@ -4773,6 +5591,97 @@ class MainWindow(QMainWindow):
         if self._current_folder:
             self._reload_keep_selection()
 
+    def _lookup_original_years(self):
+        selected = self._get_selected_files()
+        if not selected:
+            return
+        mb_config = self._load_musicbrainz_config()
+        if not mb_config.get('enabled', True):
+            QMessageBox.information(self, "MusicBrainz", "MusicBrainz ist in den Einstellungen deaktiviert.")
+            return
+        fresh = [(path, load_mp3_tags(path)) for path, _ in selected]
+        already_set = [(p, t) for p, t in fresh if str(t.get('original_year', '')).strip()]
+        missing = [(p, t) for p, t in fresh if not str(t.get('original_year', '')).strip()]
+
+        if already_set:
+            box = QMessageBox(self)
+            box.setWindowTitle("Originaljahr suchen")
+            box.setText(
+                f"{len(already_set)} von {len(fresh)} ausgewaehlten Dateien haben bereits "
+                f"ein Original-Jahr und werden standardmaessig uebersprungen."
+            )
+            checkbox = QCheckBox("Auch bereits gesetzte Original-Jahre erneut abfragen")
+            checkbox.setChecked(self._original_year_include_existing)
+            box.setCheckBox(checkbox)
+            box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(QMessageBox.StandardButton.Ok)
+            if box.exec() != QMessageBox.StandardButton.Ok:
+                return
+            self._original_year_include_existing = checkbox.isChecked()
+            fresh = fresh if self._original_year_include_existing else missing
+
+        if not fresh:
+            self.status_bar.showMessage("Alle ausgewaehlten Dateien haben bereits ein Original-Jahr.")
+            return
+
+        self.original_year_btn.setEnabled(False)
+        self.status_bar.showMessage(
+            f"Suche Originaljahre fuer {len(fresh)} Datei(en) via MusicBrainz..."
+        )
+        self.status_progress.setMaximum(max(len(fresh), 1))
+        self.status_progress.setValue(0)
+        self.status_progress.setVisible(True)
+        self._original_year_thread = OriginalYearLookupThread(fresh, mb_config)
+        self._original_year_thread.progress.connect(self._on_original_year_progress)
+        self._original_year_thread.finished.connect(self._on_original_year_done)
+        self._original_year_thread.error.connect(
+            lambda msg: self.status_bar.showMessage(f"MusicBrainz: {msg}")
+        )
+        self._original_year_thread.start()
+
+    def _on_original_year_progress(self, done, total, filename):
+        self.status_bar.showMessage(
+            f"MusicBrainz Originaljahr {done + 1}/{total}: {filename}"
+        )
+        self.status_progress.setMaximum(max(total, 1))
+        self.status_progress.setValue(done + 1)
+
+    def _on_original_year_done(self, results):
+        self.status_progress.setVisible(False)
+        self.original_year_btn.setEnabled(bool(self._get_selected_files()))
+        found_count = sum(1 for r in results if r.get('found'))
+        if not results:
+            self.status_bar.showMessage("Keine Originaljahr-Suche abgeschlossen.")
+            return
+
+        dlg = OriginalYearReviewDialog(results, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            self.status_bar.showMessage(
+                f"Originaljahr-Suche fertig — {found_count} Treffer, nichts geschrieben."
+            )
+            return
+
+        updates = dlg.selected_updates()
+        if not updates:
+            self.status_bar.showMessage(
+                f"Originaljahr-Suche fertig — {found_count} Treffer, keine Auswahl geschrieben."
+            )
+            return
+
+        errors = []
+        for path, year in updates:
+            ok = write_mp3_tags(path, {'original_year': str(year)})
+            if not ok:
+                errors.append(Path(path).name)
+
+        if self._current_folder:
+            self._reload_keep_selection()
+
+        msg = f"{len(updates)} Originaljahr(e) geschrieben."
+        if errors:
+            msg += f"  {len(errors)} Fehler: " + ", ".join(errors)
+        self.status_bar.showMessage(msg)
+
     def _open_about(self):
         import webbrowser
         dlg = QDialog(self)
@@ -4788,7 +5697,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         for text, style in [
-            ("Version: 2.1", "color: #a6adc8; font-size: 12px;"),
+            ("Version: 2.2", "color: #a6adc8; font-size: 12px;"),
             ("© PolzeSoft 2026", "color: #6c7086; font-size: 12px;"),
         ]:
             lbl = QLabel(text)
@@ -4820,11 +5729,17 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self):
         numeric_track = self._load_config().get('numeric_track_display', False)
-        dlg = SettingsDialog(self._discogs_token, numeric_track, parent=self)
+        dlg = SettingsDialog(
+            self._discogs_token, numeric_track,
+            self._load_musicbrainz_config(),
+            parent=self
+        )
         if dlg.exec():
             self._discogs_token = dlg.get_token()
             self._save_token(self._discogs_token)
             self._save_config({'numeric_track_display': dlg.get_numeric_track()})
+            self._save_musicbrainz_config(dlg.get_musicbrainz_config())
+            self._on_selection_changed()
 
     def _open_adolar_config(self):
         config = self._load_adolar_config()
