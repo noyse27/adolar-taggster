@@ -5226,8 +5226,14 @@ class MainWindow(QMainWindow):
         if not selected:
             return {}
         _, tags = selected[0]
+        album_artists = {tags2.get('album_artist', '').strip().lower() for _, tags2 in selected}
+        artists = {tags2.get('artist', '').strip() for _, tags2 in selected if tags2.get('artist', '').strip()}
+        is_compilation = (
+            any('various' in aa for aa in album_artists if aa)
+            or len(artists) > 1
+        )
         return {
-            'artist': tags.get('artist', ''),
+            'artist': 'Various Artists' if is_compilation else tags.get('artist', ''),
             'album': tags.get('album', ''),
             'year': tags.get('year', ''),
         }
