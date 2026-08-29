@@ -155,7 +155,10 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### v2.3 (current)
+### v2.4 (current)
+- Bugfix: Das Jahr-Feld (TDRC/TDOR) wird beim Speichern jetzt immer auf eine reine 4-stellige Jahreszahl gekürzt, unabhängig von der Quelle (getippt, eingefügt, aus Discogs/MusicBrainz übernommen) — z.B. "1958-05-03" wird zu "1958" statt unverändert übernommen zu werden
+
+### v2.3
 - Bugfix: Bei manchen Compilations/Dateien enthielt das ID3-Jahr-Feld (TDRC) intern zwei identische Werte; Taggster zeigte fälschlich "1958,1958" statt "1958" an, und dieser Wert wurde beim Speichern unverändert zurückgeschrieben. Mehrwertige TDRC/TDOR-Frames werden jetzt beim Laden auf den ersten Wert normalisiert.
 
 ### v2.2

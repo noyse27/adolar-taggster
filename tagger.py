@@ -515,9 +515,11 @@ def write_mp3_tags(path, tag_data, cover_data=None):
         if tag_data.get('album'):
             id3['TALB'] = TALB(encoding=3, text=tag_data['album'])
         if tag_data.get('year'):
-            id3['TDRC'] = TDRC(encoding=3, text=str(tag_data['year']))
+            year_val = parse_year(tag_data['year'])
+            id3['TDRC'] = TDRC(encoding=3, text=str(year_val) if year_val else str(tag_data['year']).strip())
         if tag_data.get('original_year'):
-            id3['TDOR'] = TDOR(encoding=3, text=str(tag_data['original_year']))
+            orig_year_val = parse_year(tag_data['original_year'])
+            id3['TDOR'] = TDOR(encoding=3, text=str(orig_year_val) if orig_year_val else str(tag_data['original_year']).strip())
         if tag_data.get('genre'):
             id3['TCON'] = TCON(encoding=3, text=tag_data['genre'])
         if tag_data.get('tracknumber'):
@@ -5709,7 +5711,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         for text, style in [
-            ("Version: 2.3", "color: #a6adc8; font-size: 12px;"),
+            ("Version: 2.4", "color: #a6adc8; font-size: 12px;"),
             ("© PolzeSoft 2026", "color: #6c7086; font-size: 12px;"),
         ]:
             lbl = QLabel(text)
