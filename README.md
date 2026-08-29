@@ -155,7 +155,10 @@ Use an absolute path to move files: `I:\Musik\%1\[%4] %3\%6 - %2`
 
 ## Changelog
 
-### v2.2 (current)
+### v2.3 (current)
+- Bugfix: Bei manchen Compilations/Dateien enthielt das ID3-Jahr-Feld (TDRC) intern zwei identische Werte; Taggster zeigte fälschlich "1958,1958" statt "1958" an, und dieser Wert wurde beim Speichern unverändert zurückgeschrieben. Mehrwertige TDRC/TDOR-Frames werden jetzt beim Laden auf den ersten Wert normalisiert.
+
+### v2.2
 - Originaljahr-Suche (MusicBrainz): Fortschrittsbalken in der Statusleiste zeigt den Suchfortschritt zusätzlich zum bisherigen Text
 - Originaljahr-Suche: robustere Retries bei MusicBrainz-Verbindungsfehlern/503-Überlastung, verständlichere Fehlermeldungen statt roher Exception-Texte
 - Originaljahr-Suche: Dateien mit bereits gesetztem Original-Jahr werden standardmäßig übersprungen; optionale erneute Abfrage per Checkbox, deren Wahl für die laufende Session erhalten bleibt (Standard nach Neustart: nur leere Original-Jahre prüfen)

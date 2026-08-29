@@ -457,6 +457,12 @@ QDialogButtonBox QPushButton { min-width: 80px; }
 """
 
 
+def _first_year_value(value):
+    """Collapse a multi-valued TDRC/TDOR frame (mutagen joins with ',') to its first entry."""
+    text = str(value or '')
+    return text.split(',')[0].strip()
+
+
 def load_mp3_tags(path):
     """Load tags from an MP3 file, returns dict."""
     tags = {
@@ -473,8 +479,8 @@ def load_mp3_tags(path):
             tags['title'] = str(id3.get('TIT2', ''))
             tags['artist'] = str(id3.get('TPE1', ''))
             tags['album'] = str(id3.get('TALB', ''))
-            tags['year'] = str(id3.get('TDRC', ''))
-            tags['original_year'] = str(id3.get('TDOR', ''))
+            tags['year'] = _first_year_value(id3.get('TDRC', ''))
+            tags['original_year'] = _first_year_value(id3.get('TDOR', ''))
             tags['genre'] = str(id3.get('TCON', ''))
             tags['tracknumber'] = str(id3.get('TRCK', ''))
             tags['bpm'] = str(id3.get('TBPM', ''))
@@ -5703,7 +5709,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         for text, style in [
-            ("Version: 2.2", "color: #a6adc8; font-size: 12px;"),
+            ("Version: 2.3", "color: #a6adc8; font-size: 12px;"),
             ("© PolzeSoft 2026", "color: #6c7086; font-size: 12px;"),
         ]:
             lbl = QLabel(text)
